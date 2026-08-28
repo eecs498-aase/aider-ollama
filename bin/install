@@ -9,7 +9,7 @@ set -euo pipefail
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEST="${PREFIX:-$HOME/.local/bin}"
-CMDS="ollama-tunnel ollama-relay"
+CMDS="ollama-tunnel ollama-relay install-ollama"
 
 mkdir -p "$DEST"
 for c in $CMDS; do

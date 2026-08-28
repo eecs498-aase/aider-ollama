@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# Install Ollama into your home directory. No root, no sudo, nothing outside
+# $PREFIX.
+#
+#   install-ollama                 into ~/.local
+#   install-ollama --prefix DIR    somewhere else
+#   install-ollama --force         reinstall over an existing copy
+#
+# The official installer at ollama.com/install.sh is not an option on a machine
+# where you are not root: it writes to /usr/local and calls sudo, and setting
+# OLLAMA_INSTALL_DIR does not stop it, because it also wants to register a
+# systemd service. The release tarball has exactly the layout of the prefix it
+# would install into - bin/ollama and lib/ollama/* - so unpacking it into
+# ~/.local *is* that install, minus the root.
+#
+# On macOS this does nothing useful: the download there is an app bundle, and
+# dragging it to ~/Applications is already a user-only install.
+set -euo pipefail
+
+PREFIX="$HOME/.local"
+FORCE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --prefix) PREFIX="${2:?--prefix needs a directory}"; shift 2 ;;
+    --force)  FORCE=1; shift ;;
+    -h|--help) sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "install-ollama: unknown argument '$1'" >&2; exit 2 ;;
+  esac
+done
+
+say() { echo "install-ollama: $*"; }
+die() { echo "install-ollama: $*" >&2; exit 1; }
+
+if [ "$(uname -s)" = "Darwin" ]; then
+  say "on macOS, download the app from https://ollama.com/download"
+  say "and drag it to ~/Applications - that needs no root either."
+  exit 0
+fi
+
+if [ -z "$FORCE" ] && command -v ollama >/dev/null 2>&1; then
+  say "already installed: $(command -v ollama)  $(ollama --version 2>&1 | head -1)"
+  say "use --force to install anyway"
+  exit 0
+fi
+
+case "$(uname -m)" in
+  x86_64|amd64)  arch=amd64 ;;
+  aarch64|arm64) arch=arm64 ;;
+  *) die "no Ollama build for $(uname -m)" ;;
+esac
+asset="ollama-linux-$arch.tar.zst"
+url="https://ollama.com/download/$asset"
+
+# Download to local disk, not into $PREFIX. On a machine where home is a
+# network share, staging a 1.4GB file there and then unpacking it back into the
+# same share writes the whole thing twice over the network.
+work="$(mktemp -d "${TMPDIR:-/tmp}/install-ollama.XXXXXX")"
+trap 'rm -rf "$work"' EXIT
+
+mkdir -p "$PREFIX"
+say "downloading $asset (~1.4GB)"
+curl -fL --progress-bar -o "$work/$asset" "$url" || die "download failed"
+
+say "unpacking into $PREFIX"
+if command -v zstd >/dev/null 2>&1; then
+  zstd -dc "$work/$asset" | tar -xf - -C "$PREFIX"
+elif tar --zstd -tf "$work/$asset" >/dev/null 2>&1; then
+  # Note this tests the actual file. `tar --zstd --help` succeeds on tars that
+  # cannot really read zstd, so asking the help text is not a check.
+  tar --zstd -xf "$work/$asset" -C "$PREFIX"
+elif command -v python3 >/dev/null 2>&1; then
+  # Some distros ship neither zstd nor a tar that understands it, and you
+  # cannot install one without root. Python can, and is already there.
+  say "no zstd; unpacking with python3"
+  python3 -m venv "$work/venv" >/dev/null 2>&1 || die "python3 has no venv module"
+  "$work/venv/bin/pip" install --quiet --disable-pip-version-check zstandard || die "could not install zstandard"
+  "$work/venv/bin/python" - "$work/$asset" "$PREFIX" <<'PYEOF'
+import sys, tarfile, zstandard
+archive, dest = sys.argv[1], sys.argv[2]
+with open(archive, "rb") as f, zstandard.ZstdDecompressor().stream_reader(f) as r:
+    tarfile.open(fileobj=r, mode="r|").extractall(dest, filter="tar")
+PYEOF
+else
+  die "nothing here can unpack .tar.zst (no zstd, no zstd-aware tar, no python3)"
+fi
+
+[ -x "$PREFIX/bin/ollama" ] || die "ollama did not land in $PREFIX/bin"
+say "installed $("$PREFIX/bin/ollama" --version 2>&1 | grep -o 'version is.*' || echo ollama) in $PREFIX"
+
+case ":$PATH:" in
+  *":$PREFIX/bin:"*) ;;
+  *) echo
+     echo "$PREFIX/bin is not on your PATH. Add this to your shell profile:"
+     echo "    export PATH=\"$PREFIX/bin:\$PATH\"" ;;
+esac

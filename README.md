@@ -18,14 +18,30 @@ Two things, and you may only want one of them:
 You need [Ollama](https://ollama.com/download) and aider
 (`python3 -m pip install aider-install && aider-install`).
 
-For the config alone, you only need the dotfiles - see below. `bin/install` is
-for the tunnel, and puts its two commands on your PATH:
+For the config alone, you only need the dotfiles - see below. `bin/install`
+puts this repo's commands on your PATH:
 
 ```bash
 git clone git@github.com:eecs498-aase/aider-ollama.git
 cd aider-ollama
-bin/install          # symlinks ollama-tunnel and ollama-relay into ~/.local/bin
+bin/install          # symlinks into ~/.local/bin
 ```
+
+### Installing Ollama where you are not root
+
+On a lab machine, `ollama.com/install.sh` is not an option: it writes to
+`/usr/local` and calls `sudo`, and `OLLAMA_INSTALL_DIR` does not stop it,
+because it also wants to register a systemd service.
+
+```bash
+install-ollama          # unpacks the release tarball into ~/.local
+```
+
+The tarball has exactly the layout of the prefix the official installer wants -
+`bin/ollama`, `lib/ollama/*` - so putting it in `~/.local` is that same install
+without the root. It stages the download on local disk rather than in your
+home, which matters when home is a network share and would otherwise carry
+1.4GB twice.
 
 ## The model is on this machine
 
@@ -132,6 +148,7 @@ does not care.
 
 | | |
 |---|---|
+| `install-ollama [--prefix DIR]` | install Ollama into your home, no root |
 | `ollama-tunnel setup <user>` | pick the node and port, once, on your laptop |
 | `ollama-tunnel start\|stop\|restart\|status` | the laptop half |
 | `ollama-tunnel node [--next\|<name>]` | show or move the node both halves meet on |

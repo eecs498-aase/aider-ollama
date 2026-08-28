@@ -81,8 +81,9 @@ ensure_linger() {
 
 start_ollama() {
   ollama_up && return 0
-  command -v ollama >/dev/null 2>&1 || die "no ollama on this machine. Without root:
-  curl -fsSL https://ollama.com/install.sh | OLLAMA_INSTALL_DIR=\$HOME/.local sh"
+  command -v ollama >/dev/null 2>&1 || die "no ollama on this machine. You are not
+  root here, and ollama.com/install.sh calls sudo. Use the one in this repo:
+      install-ollama"
   say "starting Ollama here..."
   nohup setsid ollama serve >"$HOME/ollama.log" 2>&1 </dev/null &
   for _ in $(seq 1 30); do ollama_up && return 0; sleep 1; done
