@@ -212,6 +212,39 @@ CAEN_NODE=relay.example.com RELAY_PORT=11787 bin/ollama-tunnel setup <your-user>
 `node --next` assumes the CAEN naming and will not help you elsewhere; the rest
 does not care.
 
+## Two variables, and why `source .env` is not enough
+
+They are read by different programs, and mixing them up costs an afternoon.
+
+| | read by | says |
+|---|---|---|
+| `OLLAMA_API_BASE` | aider | where to find the model |
+| `OLLAMA_HOST` | the `ollama` command | where its server is, and what `ollama serve` binds to |
+
+aider reads `.env` itself, so `OLLAMA_API_BASE` there is all it needs. The
+`ollama` command does not read `.env` at all - it reads the environment. So to
+point `ollama list` or `ollama pull` at a model arriving over the tunnel:
+
+```bash
+export OLLAMA_HOST=127.0.0.1:11435
+ollama list
+```
+
+**`source .env` on its own will not do it.** A plain `KEY=value` that you source
+becomes a shell variable, not an environment variable, and no program you launch
+can see it - `ollama` would silently keep talking to 11434. Which is why every
+line in `.env.example` says `export`: aider's parser strips the word, and the
+file then works both ways.
+
+```bash
+source .env            # works, because the lines say export
+set -a; . .env; set +a # the equivalent if yours do not
+```
+
+One trap. `OLLAMA_HOST` also decides what `ollama serve` binds to. Exporting
+`127.0.0.1:11435` and then starting a server on your laptop puts it on top of
+the tunnel. Set it to inspect a remote model, not before starting a local one.
+
 ## Commands
 
 | | |
