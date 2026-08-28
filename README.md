@@ -84,7 +84,7 @@ reach, and your laptop pulls it back down:
 lab computer  --ssh -R-->   CAEN node   <--ssh -L--  your laptop
 bin/ollama-relay            (a meeting          bin/ollama-tunnel
 ollama on the GPU            point, runs                aider
-                             nothing)            127.0.0.1:11434
+                             nothing)            127.0.0.1:11435
 ```
 
 Two commands, named for the machine you run them on. Neither will run on the
@@ -108,9 +108,36 @@ bin/ollama-relay start      # on the lab computer
 bin/ollama-tunnel start     # on your laptop
 ```
 
-The tunnel lands on `127.0.0.1:11434`, which is what `.env.example` already
-points aider at, so `aider` needs no telling that the model is elsewhere. `status` on either half reports every
+The tunnel lands on **`127.0.0.1:11435`**, not 11434. Point aider at it in
+`.env` - the line is already there, commented:
+
+```
+OLLAMA_API_BASE=http://127.0.0.1:11435
+```
+
+That is the only change to a project, and switching back to a model on your own
+machine is switching that line back. `status` on either half reports every
 hop separately, so you can see which one is down rather than guessing.
+
+### Running Ollama on your laptop as well
+
+Nothing to do - that is why the tunnel is on 11435. Your laptop's Ollama keeps
+11434, the lab computer's arrives on 11435, and which one aider talks to is the
+`OLLAMA_API_BASE` line in `.env`. Both can run at once.
+
+They used to share 11434, and that clash was the bad kind: a local Ollama
+answers a probe exactly as the tunnel would, so nothing failed - aider just
+quietly used the laptop's model while you wondered why the lab GPU felt slow.
+`bin/ollama-tunnel` still refuses, and `status` still says which of the two is
+answering, in case something else takes 11435:
+
+```
+ollama-tunnel: ollama is already serving 127.0.0.1:11435
+  That is not the tunnel. Stop it first, or it will shadow the model
+  on your lab computer and aider will quietly use the wrong one.
+```
+
+`OLLAMA_TUNNEL_PORT=11500 bin/ollama-tunnel start` moves it again if you need.
 
 ### Three things that make this harder than it looks
 
@@ -122,14 +149,14 @@ dead on arrival, with both ends reporting a healthy connection. Neither script
 ever dials that name for the tunnel; `setup` pins one node by its real name.
 
 **A port on a shared node belongs to whoever got there first.** So your relay
-port is not 11434 but a number derived from your uniqname - your two machines
+port on the node is a number derived from your uniqname - your two machines
 compute the same one without coordinating. If it is taken anyway, `bin/ollama-relay`
 walks up until one is accepted and records where it landed; your laptop follows
 on its next `start`. If the whole node is down, `bin/ollama-tunnel node --next`
 moves both halves to the next one in the ring.
 
-**`ssh -L 11434:localhost:11434` can bind only `[::1]`.** Then `curl
-localhost:11434` works, because curl tries every address a name resolves to, and
+**`ssh -L 11435:localhost:11435` can bind only `[::1]`.** Then `curl
+localhost:11435` works, because curl tries every address a name resolves to, and
 aider does not, because litellm resolves `127.0.0.1` and never falls back. You
 get `APIConnectionError ... [Errno 61] Connection refused` from aider alone and
 go looking for the fault in the wrong place. Both address families are bound

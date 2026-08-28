@@ -49,7 +49,13 @@ die() { echo "ollama-tunnel: $1" >&2; exit 1; }
 REMOTE_CONF=".config/aider-ollama/tunnel.conf"   # relative to the CAEN home
 LOCAL_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/aider-ollama/tunnel.conf"
 LOGIN="login.engin.umich.edu"                      # round-robin; setup only
-PORT="${OLLAMA_TUNNEL_PORT:-11434}"                # where aider looks, here
+# Deliberately not 11434. That is Ollama's own port, and if you also run Ollama
+# on this laptop the tunnel cannot have it - worse, nothing would fail loudly: a
+# local Ollama answers a probe exactly as the tunnel would, so aider would
+# quietly use your laptop's model and you would wonder why the lab GPU felt
+# slow. The remote model gets its own address, so both can run and you can see
+# which is which.
+PORT="${OLLAMA_TUNNEL_PORT:-11435}"                # where aider reaches the lab computer's model
 
 load_conf() {
   [ -f "$LOCAL_CONF" ] || die "not set up yet. Run:  bin/ollama-tunnel setup <your-uniqname>"
@@ -193,7 +199,7 @@ cmd_start() {
   if ollama_up; then
     case "$(holder)" in
       ssh|"") echo "ollama-tunnel: ${green}already up${off} at http://127.0.0.1:$PORT"
-              echo "               next:  aider"
+              echo "               .env:  OLLAMA_API_BASE=http://127.0.0.1:$PORT"
               return 0 ;;
       *)      echo "ollama-tunnel: ${yellow}$(holder) is already serving 127.0.0.1:$PORT${off}" >&2
               echo "  That is not the tunnel. Stop it first, or it will shadow the model" >&2
@@ -218,8 +224,9 @@ cmd_start() {
     exit 1
   done
   if ollama_up; then
-    echo "ollama-tunnel: ${green}up${off}. Ollama answering at http://127.0.0.1:$PORT"
-    echo "               next:  aider"
+    echo "ollama-tunnel: ${green}up${off}. The lab computer's Ollama is at http://127.0.0.1:$PORT"
+    echo "               point aider at it in .env:"
+    echo "                   OLLAMA_API_BASE=http://127.0.0.1:$PORT"
     return 0
   fi
   echo "ollama-tunnel: ${yellow}the forward is open but nothing answered${off}" >&2
@@ -298,7 +305,17 @@ cmd_status() {
     fi
   fi
   if ollama_up; then
-    echo "Ollama:       ${green}answering${off} through the tunnel"
+    # Something answering here is not proof the tunnel is what answered. A local
+    # Ollama on the same port responds identically to a probe, and reporting it
+    # as the tunnel is how you spend an afternoon wondering why the lab GPU is
+    # slow when you have been talking to your laptop the whole time.
+    case "$(holder)" in
+      ssh|"")
+        echo "Ollama:       ${green}answering${off} through the tunnel" ;;
+      *)
+        echo "Ollama:       ${yellow}answering, but from $(holder) on this machine${off}"
+        echo "              ${dim}not the tunnel - aider will use this, not your lab computer${off}" ;;
+    esac
     curl -sf -m 5 "http://127.0.0.1:$PORT/api/tags" \
       | tr ',{}' '\n\n\n' | sed -n 's/.*"name":"\([^"]*\)".*/              model: \1/p'
   else
