@@ -180,7 +180,7 @@ cmd_start() {
   done
   if ollama_up; then
     echo "ollama-tunnel: ${green}up${off}. Ollama answering at http://127.0.0.1:$PORT"
-    echo "               next:  aider-ollama start"
+    echo "               next:  aider"
     return 0
   fi
   echo "ollama-tunnel: ${yellow}the forward is open but nothing answered${off}" >&2

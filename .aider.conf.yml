@@ -1,9 +1,9 @@
 # aider -> Ollama. Nothing in here is specific to a project.
 #
-# Change the model with `aider-ollama model qwen3.5:9b`, which also writes the
-# settings block that model needs. Editing `model:` by hand and skipping that
-# block is the single most confusing way to break this - see
-# .aider.model.settings.yml for what goes wrong.
+# To change models, edit the `model:` line below - and make sure that model has
+# a block in .aider.model.settings.yml. Every model shipped there already does.
+# Adding one that does not, and skipping the block, is the single most confusing
+# way to break this; that file explains what goes wrong.
 #
 # Where Ollama is, as opposed to which model it serves, lives in .env
 # (OLLAMA_API_BASE). That is the only line you change when you move the model

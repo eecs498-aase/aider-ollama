@@ -7,42 +7,54 @@ Two things, and you may only want one of them:
 
 - **A blank aider config for Ollama.** Model settings, context windows and
   pricing metadata that are already right, so aider does not silently truncate
-  your files. Copy it into any project.
+  your files. Copy the dotfiles into any project and run `aider`. There is no
+  wrapper command and nothing to learn.
 - **A tunnel for a GPU you cannot SSH into.** Written for the University of
   Michigan CAEN lab machines, which can dial out but never in. Works for any
   pair of machines that can both reach some third host.
 
 ## Install
 
+You need [Ollama](https://ollama.com/download) and aider
+(`python3 -m pip install aider-install && aider-install`).
+
+For the config alone, you only need the dotfiles - see below. `bin/install` is
+for the tunnel, and puts its two commands on your PATH:
+
 ```bash
 git clone git@github.com:eecs498-aase/aider-ollama.git
 cd aider-ollama
-bin/install          # symlinks the three commands into ~/.local/bin
+bin/install          # symlinks ollama-tunnel and ollama-relay into ~/.local/bin
 ```
-
-You also need [Ollama](https://ollama.com/download) and aider
-(`python3 -m pip install aider-install && aider-install`).
 
 ## The model is on this machine
 
-Copy the four dotfiles into your project and go:
+Copy the dotfiles into your project, start Ollama, run aider:
 
 ```bash
 cp .aider.conf.yml .aider.model.settings.yml .aider.model.metadata.json .env.example /path/to/project/
 cd /path/to/project
-aider-ollama start
+cp .env.example .env
+
+ollama serve &            # or just open the Ollama app on macOS
+ollama pull qwen3.5:4b    # whatever .aider.conf.yml names
+aider
 ```
 
-`start` brings Ollama up, pulls the model if you do not have it, and execs into
-aider. `status` tells you what aider will actually talk to. `model qwen3.5:9b`
-switches models and writes the settings block that model needs.
+That is the whole thing. Nothing wraps aider, and `.env` tells it where Ollama
+is - the only line you change when the model moves to another machine.
+
+To use a different model, edit the `model:` line in `.aider.conf.yml`.
 
 **The one thing worth understanding.** A model with no entry in
 `.aider.model.settings.yml` gets a 2048-token context, because that is what
 litellm assumes for a model it has never heard of. aider then truncates your
 files to fit and the model starts inventing functions that exist three lines
-further down. It looks exactly like a stupid model. `aider-ollama model <name>`
-writes the entry, which is why you use it instead of editing `model:` by hand.
+further down. It looks exactly like a stupid model, and it is the reason this
+repo exists at all. Every model named in that file already has a block. If you
+switch to one that does not, copy an existing block and change the name -
+`num_ctx` there and `max_input_tokens` in `.aider.model.metadata.json` should
+match.
 
 ## The model is on a machine you cannot SSH into
 
@@ -79,7 +91,7 @@ ollama-tunnel start     # on your laptop
 ```
 
 The tunnel lands on `127.0.0.1:11434`, which is what `.env.example` already
-points aider at, so nothing else changes. `status` on either half reports every
+points aider at, so `aider` needs no telling that the model is elsewhere. `status` on either half reports every
 hop separately, so you can see which one is down rather than guessing.
 
 ### Three things that make this harder than it looks
@@ -120,10 +132,6 @@ does not care.
 
 | | |
 |---|---|
-| `aider-ollama start [--build]` | ensure the model is reachable, then run aider |
-| `aider-ollama stop` | stop the Ollama this machine started |
-| `aider-ollama status` | what aider will actually talk to, and at what context |
-| `aider-ollama model <name>` | switch models, writing the settings block |
 | `ollama-tunnel setup <user>` | pick the node and port, once, on your laptop |
 | `ollama-tunnel start\|stop\|restart\|status` | the laptop half |
 | `ollama-tunnel node [--next\|<name>]` | show or move the node both halves meet on |

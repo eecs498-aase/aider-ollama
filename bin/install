@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Symlink the three commands into ~/.local/bin so they work from any directory.
+# Symlink the tunnel commands into ~/.local/bin so they work from any directory.
 #
 #   bin/install            link them
 #   bin/install --remove   unlink them
@@ -9,7 +9,7 @@ set -euo pipefail
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEST="${PREFIX:-$HOME/.local/bin}"
-CMDS="aider-ollama ollama-tunnel ollama-relay"
+CMDS="ollama-tunnel ollama-relay"
 
 mkdir -p "$DEST"
 for c in $CMDS; do
