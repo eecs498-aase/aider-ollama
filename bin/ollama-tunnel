@@ -190,6 +190,23 @@ holder() {
   [ -n "$pid" ] && ps -o comm= -p "$pid" 2>/dev/null | sed 's|.*/||'
 }
 
+# Both success paths end here, so the instruction is worded once. A bare
+# OLLAMA_API_BASE=... line reads like a command to run, and running it is the
+# one thing that does not work: aider loads .env with override, so a shell
+# variable loses to the file every time.
+say_env() {
+  echo
+  echo "  aider finds it through .env in the project you run aider from."
+  echo "  That file ships with both lines; make the ${PORT} one the live one:"
+  echo
+  echo "      export OLLAMA_API_BASE=http://127.0.0.1:$PORT"
+  echo "      # export OLLAMA_API_BASE=http://127.0.0.1:11434   <- your own Ollama"
+  echo
+  echo "  Editing .env is the way. Exporting it in your shell instead does"
+  echo "  nothing, because aider's .env overrides the environment."
+  echo
+}
+
 cmd_start() {
   ensure_master
   refresh_conf
@@ -198,8 +215,8 @@ cmd_start() {
   # a no-op that says so rather than an error that sends you debugging.
   if ollama_up; then
     case "$(holder)" in
-      ssh|"") echo "ollama-tunnel: ${green}already up${off} at http://127.0.0.1:$PORT"
-              echo "               .env:  OLLAMA_API_BASE=http://127.0.0.1:$PORT"
+      ssh|"") echo "ollama-tunnel: ${green}already up${off}. The lab computer's model is at http://127.0.0.1:$PORT"
+              say_env
               return 0 ;;
       *)      echo "ollama-tunnel: ${yellow}$(holder) is already serving 127.0.0.1:$PORT${off}" >&2
               echo "  That is not the tunnel. Stop it first, or it will shadow the model" >&2
@@ -224,9 +241,8 @@ cmd_start() {
     exit 1
   done
   if ollama_up; then
-    echo "ollama-tunnel: ${green}up${off}. The lab computer's Ollama is at http://127.0.0.1:$PORT"
-    echo "               point aider at it in .env:"
-    echo "                   OLLAMA_API_BASE=http://127.0.0.1:$PORT"
+    echo "ollama-tunnel: ${green}up${off}. The lab computer's model is at http://127.0.0.1:$PORT"
+    say_env
     return 0
   fi
   echo "ollama-tunnel: ${yellow}the forward is open but nothing answered${off}" >&2
