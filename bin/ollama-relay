@@ -112,6 +112,14 @@ start_relay() {
   # The walk wraps inside the same window ollama-tunnel derives ports from. It
   # used to stop dead at 11999 while that window ran to 12499, so half of all
   # uniqnames made no attempt at all and were told every port was busy.
+  # If the port we want is already carrying, this is a re-run, not contention.
+  # Without this check the walk reads our own live relay as someone else's
+  # squatter and moves to a fresh port every restart, which is how a tunnel
+  # drifts from 11434 to 11435 to 11436 across a morning.
+  if far_up; then
+    say "${green}already up${off} on $RELAY_PORT. On your laptop:  bin/ollama-tunnel start"
+    return 0
+  fi
   for try in $(seq 0 19); do
     if [ "$try" = 0 ]; then
       port="$RELAY_PORT"          # honour a pinned port even outside the window

@@ -176,12 +176,46 @@ Then back here:      bin/ollama-tunnel start
 EOF
 }
 
+# What is listening on our local port, by command name. Used to tell "the
+# tunnel is already up" apart from "something else is squatting on the port",
+# which ssh reports identically as a forwarding failure.
+holder() {
+  pid="$(lsof -nP -iTCP:"$PORT" -sTCP:LISTEN -t 2>/dev/null | head -1)"
+  [ -n "$pid" ] && ps -o comm= -p "$pid" 2>/dev/null | sed 's|.*/||'
+}
+
 cmd_start() {
   ensure_master
   refresh_conf
+  # Asking for a forward that is already in place fails, and ssh words it the
+  # same way as a genuine conflict. Look before leaping, so a second `start` is
+  # a no-op that says so rather than an error that sends you debugging.
+  if ollama_up; then
+    case "$(holder)" in
+      ssh|"") echo "ollama-tunnel: ${green}already up${off} at http://127.0.0.1:$PORT"
+              echo "               next:  aider"
+              return 0 ;;
+      *)      echo "ollama-tunnel: ${yellow}$(holder) is already serving 127.0.0.1:$PORT${off}" >&2
+              echo "  That is not the tunnel. Stop it first, or it will shadow the model" >&2
+              echo "  on your lab computer and aider will quietly use the wrong one." >&2
+              return 1 ;;
+    esac
+  fi
   for f in $(forwards); do
     ssh "${MUX[@]}" -O cancel -L "$f" "$TARGET" >/dev/null 2>&1 || true
-    ssh "${MUX[@]}" -O forward -L "$f" "$TARGET" || die "the node refused $f"
+    err="$(ssh "${MUX[@]}" -O forward -L "$f" "$TARGET" 2>&1)" && continue
+    case "$err" in
+      *"Port forwarding failed"*)
+        # Local end. Nothing answered on the port a moment ago, so whatever
+        # holds it is not serving Ollama - a half-dead tunnel, usually.
+        echo "ollama-tunnel: ${red}cannot bind $f on this machine${off}" >&2
+        h="$(holder)"; [ -n "$h" ] && echo "  $h is holding 127.0.0.1:$PORT and not answering." >&2
+        echo "  Clear it and try again:  bin/ollama-tunnel stop && bin/ollama-tunnel start" >&2
+        ;;
+      *) echo "ollama-tunnel: ${red}the forward was refused${off}" >&2
+         printf '%s\n' "$err" | sed 's/^/  /' >&2 ;;
+    esac
+    exit 1
   done
   if ollama_up; then
     echo "ollama-tunnel: ${green}up${off}. Ollama answering at http://127.0.0.1:$PORT"
