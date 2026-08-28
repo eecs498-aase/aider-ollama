@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # RUN THIS ON YOUR LAPTOP. The lab computer runs ollama-relay.
 #
-#   ollama-tunnel setup <uniqname>   pick your node and port, once
-#   ollama-tunnel start [--build]    open the tunnel down from the node
-#   ollama-tunnel stop               close it
-#   ollama-tunnel restart            stop, then start --build
-#   ollama-tunnel status             every hop, reported separately
-#   ollama-tunnel node [name]        show the node, or move to another
-#   ollama-tunnel node --next        move to the next node, when one is busy
+#   bin/ollama-tunnel setup <uniqname>   pick your node and port, once
+#   bin/ollama-tunnel start [--build]    open the tunnel down from the node
+#   bin/ollama-tunnel stop               close it
+#   bin/ollama-tunnel restart            stop, then start --build
+#   bin/ollama-tunnel status             every hop, reported separately
+#   bin/ollama-tunnel node [name]        show the node, or move to another
+#   bin/ollama-tunnel node --next        move to the next node, when one is busy
 #
 #   lab computer  --ssh -R-->  CAEN node  <--ssh -L--  your laptop
 #   ollama-relay           (a meeting            ollama-tunnel
@@ -52,7 +52,7 @@ LOGIN="login.engin.umich.edu"                      # round-robin; setup only
 PORT="${OLLAMA_TUNNEL_PORT:-11434}"                # where aider looks, here
 
 load_conf() {
-  [ -f "$LOCAL_CONF" ] || die "not set up yet. Run:  ollama-tunnel setup <your-uniqname>"
+  [ -f "$LOCAL_CONF" ] || die "not set up yet. Run:  bin/ollama-tunnel setup <your-uniqname>"
   # shellcheck disable=SC1090
   . "$LOCAL_CONF"
   TARGET="$CAEN_USER@$CAEN_NODE"
@@ -150,11 +150,11 @@ forwards() { echo "127.0.0.1:$PORT:127.0.0.1:$RELAY_PORT" "[::1]:$PORT:127.0.0.1
 cmd_setup() {
   uniq="${1:-}"
   if [ -z "$uniq" ] && [ -f "$LOCAL_CONF" ]; then . "$LOCAL_CONF"; uniq="$CAEN_USER"; fi
-  [ -n "$uniq" ] || die "usage: ollama-tunnel setup <your-uniqname>"
+  [ -n "$uniq" ] || die "usage: bin/ollama-tunnel setup <your-uniqname>"
 
   # Derived by default. Override either to keep a pin you already have, or to
   # put a whole section on one node deliberately:
-  #   CAEN_NODE=caen-vnc-mi03.engin.umich.edu ollama-tunnel setup <uniqname>
+  #   CAEN_NODE=caen-vnc-mi03.engin.umich.edu bin/ollama-tunnel setup <uniqname>
   node="${CAEN_NODE:-$(derive_node "$uniq")}"
   resolves "$node" || node="caen-vnc-mi01.engin.umich.edu"
   port="${RELAY_PORT:-$(derive_port "$uniq")}"
@@ -171,8 +171,8 @@ ${bold}Set up.${off} You and your lab computer will meet on:
   node    $node
   port    $port   ${dim}($origin)${off}
 
-On the lab computer: ollama-relay start
-Then back here:      ollama-tunnel start
+On the lab computer: bin/ollama-relay start
+Then back here:      bin/ollama-tunnel start
 EOF
 }
 
@@ -191,11 +191,11 @@ cmd_start() {
   echo "ollama-tunnel: ${yellow}the forward is open but nothing answered${off}" >&2
   if far_up; then
     echo "  $CAEN_NODE is carrying $RELAY_PORT, so the lab half is connected." >&2
-    echo "  Ollama itself is not running there. On the lab computer:  ollama-relay status" >&2
+    echo "  Ollama itself is not running there. On the lab computer:  bin/ollama-relay status" >&2
   else
     echo "  Nothing on $RELAY_PORT at $CAEN_NODE - the lab half is down." >&2
-    echo "  On the lab computer:  ollama-relay start" >&2
-    echo "  If that says the node refused every port:  ollama-tunnel node --next" >&2
+    echo "  On the lab computer:  bin/ollama-relay start" >&2
+    echo "  If that says the node refused every port:  bin/ollama-tunnel node --next" >&2
   fi
   return 1
 }
@@ -242,8 +242,8 @@ cmd_node() {
   write_conf "$CAEN_USER" "$new" "$RELAY_PORT"
   cmd_stop
   echo "ollama-tunnel: both halves now meet on $new"
-  echo "               lab computer:  ollama-relay restart"
-  echo "               here:          ollama-tunnel start"
+  echo "               lab computer:  bin/ollama-relay restart"
+  echo "               here:          bin/ollama-tunnel start"
 }
 
 cmd_status() {
@@ -252,15 +252,15 @@ cmd_status() {
   if master_up; then
     echo "Connection:   ${green}held${off}"
   else
-    echo "Connection:   ${red}down${off} ${dim}(ollama-tunnel start)${off}"
+    echo "Connection:   ${red}down${off} ${dim}(bin/ollama-tunnel start)${off}"
   fi
   if master_up; then
     if far_up; then
       echo "Lab half:     ${green}carrying${off} - $CAEN_NODE is listening on $RELAY_PORT"
     else
       echo "Lab half:     ${red}down${off} - nothing on $RELAY_PORT there"
-      echo "              ${dim}on the lab computer: ollama-relay start${off}"
-      echo "              ${dim}node busy or down?   ollama-tunnel node --next${off}"
+      echo "              ${dim}on the lab computer: bin/ollama-relay start${off}"
+      echo "              ${dim}node busy or down?   bin/ollama-tunnel node --next${off}"
     fi
   fi
   if ollama_up; then

@@ -18,14 +18,16 @@ Two things, and you may only want one of them:
 You need [Ollama](https://ollama.com/download) and aider
 (`python3 -m pip install aider-install && aider-install`).
 
-For the config alone, you only need the dotfiles - see below. `bin/install`
-puts the two tunnel commands on your PATH:
+For the config alone, you only need the dotfiles - see below. For the tunnel,
+clone this on both machines and run its commands from the clone:
 
 ```bash
 git clone git@github.com:eecs498-aase/aider-ollama.git
 cd aider-ollama
-bin/install          # symlinks ollama-tunnel and ollama-relay into ~/.local/bin
 ```
+
+Everything here is `bin/something`, run from that directory. Nothing is
+installed onto your PATH, so there is only ever one way to spell a command.
 
 ### Installing Ollama where you are not root
 
@@ -80,7 +82,7 @@ reach, and your laptop pulls it back down:
 
 ```
 lab computer  --ssh -R-->   CAEN node   <--ssh -L--  your laptop
-ollama-relay                (a meeting              ollama-tunnel
+bin/ollama-relay            (a meeting          bin/ollama-tunnel
 ollama on the GPU            point, runs                aider
                              nothing)            127.0.0.1:11434
 ```
@@ -91,7 +93,7 @@ wrong one; they check and say so.
 **Once**, on your laptop:
 
 ```bash
-ollama-tunnel setup <your-uniqname>
+bin/ollama-tunnel setup <your-uniqname>
 ```
 
 That picks the node and the port the two halves will meet on and writes them to
@@ -102,8 +104,8 @@ configuring of its own.
 **Each session**, lab computer first, because it is the half that publishes:
 
 ```bash
-ollama-relay start      # on the lab computer
-ollama-tunnel start     # on your laptop
+bin/ollama-relay start      # on the lab computer
+bin/ollama-tunnel start     # on your laptop
 ```
 
 The tunnel lands on `127.0.0.1:11434`, which is what `.env.example` already
@@ -121,9 +123,9 @@ ever dials that name for the tunnel; `setup` pins one node by its real name.
 
 **A port on a shared node belongs to whoever got there first.** So your relay
 port is not 11434 but a number derived from your uniqname - your two machines
-compute the same one without coordinating. If it is taken anyway, `ollama-relay`
+compute the same one without coordinating. If it is taken anyway, `bin/ollama-relay`
 walks up until one is accepted and records where it landed; your laptop follows
-on its next `start`. If the whole node is down, `ollama-tunnel node --next`
+on its next `start`. If the whole node is down, `bin/ollama-tunnel node --next`
 moves both halves to the next one in the ring.
 
 **`ssh -L 11434:localhost:11434` can bind only `[::1]`.** Then `curl
@@ -138,7 +140,7 @@ explicitly.
 The relay is any host both machines can SSH to. Point the config at it by hand:
 
 ```bash
-CAEN_NODE=relay.example.com RELAY_PORT=11787 ollama-tunnel setup <your-user>
+CAEN_NODE=relay.example.com RELAY_PORT=11787 bin/ollama-tunnel setup <your-user>
 ```
 
 `node --next` assumes the CAEN naming and will not help you elsewhere; the rest
@@ -149,18 +151,18 @@ does not care.
 | | |
 |---|---|
 | `bin/install-ollama [--prefix DIR]` | install Ollama into your home, no root |
-| `ollama-tunnel setup <user>` | pick the node and port, once, on your laptop |
-| `ollama-tunnel start\|stop\|restart\|status` | the laptop half |
-| `ollama-tunnel node [--next\|<name>]` | show or move the node both halves meet on |
-| `ollama-relay start\|stop\|restart\|status` | the lab-computer half |
+| `bin/ollama-tunnel setup <user>` | pick the node and port, once, on your laptop |
+| `bin/ollama-tunnel start\|stop\|restart\|status` | the laptop half |
+| `bin/ollama-tunnel node [--next\|<name>]` | show or move the node both halves meet on |
+| `bin/ollama-relay start\|stop\|restart\|status` | the lab-computer half |
 
 ## One warning
 
 Ollama has no authentication. While the relay is up, anyone logged into that
-shared node can use your GPU and read what you send it. `ollama-relay stop` when
+shared node can use your GPU and read what you send it. `bin/ollama-relay stop` when
 you are done.
 
-On CAEN specifically, `ollama-relay` also enables lingering for you
+On CAEN specifically, `bin/ollama-relay` also enables lingering for you
 (`loginctl enable-linger`). Without it systemd kills everything you own the
 moment you log out - the tunnel and `ollama serve` with it - which presents as
 connections that keep dropping rather than as having logged out.

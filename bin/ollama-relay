@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # RUN THIS ON A CAEN LAB COMPUTER. Your laptop runs ollama-tunnel.
 #
-#   ollama-relay start [--build]   start Ollama here, publish it on the node
-#   ollama-relay stop              stop publishing (leaves Ollama running)
-#   ollama-relay restart           stop, then start --build
-#   ollama-relay status            every hop, reported separately
+#   bin/ollama-relay start [--build]   start Ollama here, publish it on the node
+#   bin/ollama-relay stop              stop publishing (leaves Ollama running)
+#   bin/ollama-relay restart           stop, then start --build
+#   bin/ollama-relay status            every hop, reported separately
 #
 #   this machine  --ssh -R-->  CAEN node  <--ssh -L--  your laptop
 #   ollama on the GPU          (a meeting            ollama-tunnel
@@ -42,7 +42,7 @@ PORT_MIN=11500
 PORT_SPAN=1000
 
 [ -f "$CONF" ] || die "no $CONF
-  On your laptop first:  ollama-tunnel setup <your-uniqname>"
+  On your laptop first:  bin/ollama-tunnel setup <your-uniqname>"
 # shellcheck disable=SC1090
 . "$CONF"
 TARGET="$CAEN_USER@$CAEN_NODE"
@@ -128,7 +128,7 @@ start_relay() {
         RELAY_PORT="$port"
       fi
       far_up || die "forward accepted but $CAEN_NODE is not listening on $port - see $LOG"
-      say "${green}up${off}. On your laptop now:  ollama-tunnel start"
+      say "${green}up${off}. On your laptop now:  bin/ollama-tunnel start"
       return 0
     }
     printf '%s\n' "$err" >>"$LOG"
@@ -144,7 +144,7 @@ start_relay() {
   done
   say "${red}$CAEN_NODE had no free port in 20 tries from $RELAY_PORT${off}"
   echo "              that node is unusually busy. On your laptop:" >&2
-  echo "                  ollama-tunnel node --next    ${dim}(then restart this)${off}" >&2
+  echo "                  bin/ollama-tunnel node --next    ${dim}(then restart this)${off}" >&2
   exit 1
 }
 
@@ -195,7 +195,7 @@ case "${1:-status}" in
       far_up && echo "Relay:        ${green}carrying${off} - $CAEN_NODE is listening on $RELAY_PORT" \
              || echo "Relay:        ${red}not carrying${off} - nothing on $RELAY_PORT there"
     else
-      echo "Connection:   ${red}down${off} ${dim}(ollama-relay start)${off}"
+      echo "Connection:   ${red}down${off} ${dim}(bin/ollama-relay start)${off}"
     fi
     ;;
   *) echo "usage: ollama-relay {start|stop|restart|status}" >&2; exit 2 ;;
