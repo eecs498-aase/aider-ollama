@@ -1,0 +1,49 @@
+# Without an entry here, litellm defaults Ollama models to a 2k context window
+# and aider silently truncates your files. Every model you use needs a block.
+#
+# edit_format: "whole" makes the model rewrite entire files. Reliable on small
+# models, expensive in tokens. "diff" is much cheaper and is what you should try
+# once you are on a 9B or larger model.
+#
+# num_ctx is the real memory knob. These models advertise a 256K window; asking
+# for it would eat your RAM. 32K is a sane default - raise it if you have the
+# VRAM and a reason. Keep it in step with max_input_tokens in
+# .aider.model.metadata.json.
+
+- name: ollama_chat/qwen3.5:4b
+  edit_format: whole
+  use_repo_map: true
+  extra_params:
+    num_ctx: 32768
+
+- name: ollama_chat/qwen3.5:9b
+  edit_format: whole      # try: diff
+  use_repo_map: true
+  extra_params:
+    num_ctx: 32768
+
+- name: ollama_chat/qwen3.5:27b
+  edit_format: diff
+  use_repo_map: true
+  extra_params:
+    num_ctx: 32768
+
+# Older, code-specialised alternatives. Worth benchmarking against qwen3.5:9b:
+# a smaller code-tuned model against a bigger general one.
+- name: ollama_chat/qwen2.5-coder:7b
+  edit_format: whole
+  use_repo_map: true
+  extra_params:
+    num_ctx: 32768
+
+- name: ollama_chat/qwen2.5-coder:14b
+  edit_format: diff
+  use_repo_map: true
+  extra_params:
+    num_ctx: 32768
+
+- name: ollama_chat/gemma4:12b
+  edit_format: whole      # try: diff
+  use_repo_map: true
+  extra_params:
+    num_ctx: 32768

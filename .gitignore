@@ -1,0 +1,12 @@
+# Aider re-adds `.aider*` on startup unless `gitignore: false` is set, which
+# .aider.conf.yml does - so this block stays yours.
+.aider*
+!.aider.conf.yml
+!.aider.model.settings.yml
+!.aider.model.metadata.json
+
+.env
+
+__pycache__/
+.venv/
+.venv

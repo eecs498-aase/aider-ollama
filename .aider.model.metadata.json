@@ -1,0 +1,57 @@
+{
+  "//": "Aider reads this (litellm's model_prices format) for context limits and token pricing.",
+  "//1": "Local Ollama models have no pricing, so aider's cost readout is always $0.00.",
+  "//2": "These entries lie: they price every local model at Claude Opus 5 rates",
+  "//3": "($5.00 / 1M input, $25.00 / 1M output) so /tokens and the session cost line",
+  "//4": "tell you what this run would have cost on a frontier API model.",
+  "//5": "max_input_tokens mirrors num_ctx in .aider.model.settings.yml - keep them in sync.",
+
+  "ollama_chat/qwen3.5:4b": {
+    "max_input_tokens": 32768,
+    "max_output_tokens": 8192,
+    "input_cost_per_token": 0.000005,
+    "output_cost_per_token": 0.000025,
+    "litellm_provider": "ollama_chat",
+    "mode": "chat"
+  },
+  "ollama_chat/qwen3.5:9b": {
+    "max_input_tokens": 32768,
+    "max_output_tokens": 8192,
+    "input_cost_per_token": 0.000005,
+    "output_cost_per_token": 0.000025,
+    "litellm_provider": "ollama_chat",
+    "mode": "chat"
+  },
+  "ollama_chat/qwen3.5:27b": {
+    "max_input_tokens": 32768,
+    "max_output_tokens": 8192,
+    "input_cost_per_token": 0.000005,
+    "output_cost_per_token": 0.000025,
+    "litellm_provider": "ollama_chat",
+    "mode": "chat"
+  },
+  "ollama_chat/qwen2.5-coder:7b": {
+    "max_input_tokens": 32768,
+    "max_output_tokens": 8192,
+    "input_cost_per_token": 0.000005,
+    "output_cost_per_token": 0.000025,
+    "litellm_provider": "ollama_chat",
+    "mode": "chat"
+  },
+  "ollama_chat/qwen2.5-coder:14b": {
+    "max_input_tokens": 32768,
+    "max_output_tokens": 8192,
+    "input_cost_per_token": 0.000005,
+    "output_cost_per_token": 0.000025,
+    "litellm_provider": "ollama_chat",
+    "mode": "chat"
+  },
+  "ollama_chat/gemma4:12b": {
+    "max_input_tokens": 32768,
+    "max_output_tokens": 8192,
+    "input_cost_per_token": 0.000005,
+    "output_cost_per_token": 0.000025,
+    "litellm_provider": "ollama_chat",
+    "mode": "chat"
+  }
+}

@@ -1,0 +1,279 @@
+#!/usr/bin/env bash
+# RUN THIS ON YOUR LAPTOP. The lab computer runs ollama-relay.
+#
+#   ollama-tunnel setup <uniqname>   pick your node and port, once
+#   ollama-tunnel start [--build]    open the tunnel down from the node
+#   ollama-tunnel stop               close it
+#   ollama-tunnel restart            stop, then start --build
+#   ollama-tunnel status             every hop, reported separately
+#   ollama-tunnel node [name]        show the node, or move to another
+#   ollama-tunnel node --next        move to the next node, when one is busy
+#
+#   lab computer  --ssh -R-->  CAEN node  <--ssh -L--  your laptop
+#   ollama-relay           (a meeting            ollama-tunnel
+#   ollama on the GPU           point, runs               aider
+#                               nothing)           127.0.0.1:11434
+#
+# Nothing can SSH into a lab computer, so it dials out and pushes its Ollama
+# port onto a CAEN node's loopback. This script tunnels *in* to meet it there
+# and lands it on 127.0.0.1:11434 here, which is where .env already points
+# aider - so aider needs no telling that the model is on another machine.
+#
+# Both halves must meet on the SAME node, and that is the part people get
+# wrong. `login.engin.umich.edu` is a round-robin over eighteen machines
+# (caen-vnc-mi01 through mi18) that hands out a different one per connection,
+# so two halves that both "connect to CAEN" land on different computers and the
+# tunnel is dead on arrival. Nothing here dials that name for the tunnel:
+# `setup` picks one node by its real name and writes it where both machines
+# read it.
+set -euo pipefail
+
+case "$(uname -s)" in
+  Linux) case "$(hostname -f 2>/dev/null || hostname)" in
+           *.engin.umich.edu)
+             echo "ollama-tunnel: this is a CAEN machine - run ollama-relay here." >&2
+             exit 1 ;;
+         esac ;;
+esac
+
+bold=$'\033[1m'; dim=$'\033[2m'; green=$'\033[32m'; red=$'\033[31m'; yellow=$'\033[33m'; off=$'\033[0m'
+[ -t 1 ] || { bold=""; dim=""; green=""; red=""; yellow=""; off=""; }
+die() { echo "ollama-tunnel: $1" >&2; exit 1; }
+
+# ---------------------------------------------------------------- the config
+#
+# One source of truth, in your CAEN home. That home is mounted on every CAEN
+# machine, so the lab computer reads it as a local file and needs no
+# configuring of its own. This laptop keeps a cached copy, because it has to
+# know which node to dial before it can read anything over there.
+REMOTE_CONF=".config/aider-ollama/tunnel.conf"   # relative to the CAEN home
+LOCAL_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/aider-ollama/tunnel.conf"
+LOGIN="login.engin.umich.edu"                      # round-robin; setup only
+PORT="${OLLAMA_TUNNEL_PORT:-11434}"                # where aider looks, here
+
+load_conf() {
+  [ -f "$LOCAL_CONF" ] || die "not set up yet. Run:  ollama-tunnel setup <your-uniqname>"
+  # shellcheck disable=SC1090
+  . "$LOCAL_CONF"
+  TARGET="$CAEN_USER@$CAEN_NODE"
+}
+
+resolves() { getent hosts "$1" >/dev/null 2>&1 || [ -n "$(dig +short "$1" 2>/dev/null)" ]; }
+
+# Your relay port is derived from your uniqname rather than fixed at 11434,
+# because a port on a CAEN node is shared with everyone logged into it - two
+# students both reaching for 11434 there means the second one's forward is
+# refused. Deriving it lets your two machines agree without coordinating, and
+# makes a collision with another person unlikely. `cksum` is POSIX and returns
+# the same number on macOS and on Linux, which is the only reason both ends can
+# compute it independently.
+derive_port() { echo $(( 11500 + $(printf '%s' "$1" | cksum | cut -d' ' -f1) % 1000 )); }
+
+# Spread people over the eighteen nodes, for the same reason.
+derive_node() {
+  printf 'caen-vnc-mi%02d.engin.umich.edu\n' \
+    $(( 1 + $(printf '%s-node' "$1" | cksum | cut -d' ' -f1) % 18 ))
+}
+
+write_conf() {
+  body="CAEN_USER=$1
+CAEN_NODE=$2
+RELAY_PORT=$3"
+  mkdir -p "$(dirname "$LOCAL_CONF")"
+  printf '%s\n' "$body" > "$LOCAL_CONF"
+  # Any CAEN machine can write this - every node mounts the same home, and only
+  # the tunnel itself cares which one it lands on. So prefer a connection we
+  # already hold over dialing the round-robin and paying another Duo. That is
+  # what makes `node` cheap enough to be the thing you reach for when a node is
+  # busy.
+  via="$1@$LOGIN"
+  if [ -n "${TARGET:-}" ] && master_up; then via="$TARGET"; fi
+  printf '%s\n' "$body" | ssh "${MUX[@]}" "$via" \
+    "mkdir -p ~/$(dirname "$REMOTE_CONF") && cat > ~/$REMOTE_CONF"
+}
+
+# The lab half can move its own port without asking - if the node refuses one,
+# it walks to the next and records where it landed. Re-reading the config over
+# the connection we already have keeps this half in step for free.
+refresh_conf() {
+  master_up || return 0
+  remote="$(ssh "${MUX[@]}" "$TARGET" "cat ~/$REMOTE_CONF" 2>/dev/null)" || return 0
+  case "$remote" in *RELAY_PORT=*) ;; *) return 0 ;; esac
+  new_port="$(printf '%s' "$remote" | sed -n 's/^RELAY_PORT=//p')"
+  new_node="$(printf '%s' "$remote" | sed -n 's/^CAEN_NODE=//p')"
+  # Only the port is safe to adopt. The node is what we just dialed, and if the
+  # two disagree it is because this laptop moved the pin - our copy is newer.
+  if [ -n "$new_port" ] && [ "$new_port" != "$RELAY_PORT" ] && [ "$new_node" = "$CAEN_NODE" ]; then
+    echo "ollama-tunnel: the lab half moved to port $new_port; following it"
+    RELAY_PORT="$new_port"
+    printf 'CAEN_USER=%s\nCAEN_NODE=%s\nRELAY_PORT=%s\n' "$CAEN_USER" "$CAEN_NODE" "$RELAY_PORT" > "$LOCAL_CONF"
+  fi
+}
+
+# ------------------------------------------------------------------ ssh glue
+#
+# CAEN accepts only keyboard-interactive auth - password plus Duo - so an
+# unattended connection is impossible. The fix is to stop needing one:
+# authenticate once, hold it in the background, and let every later ssh and
+# every forward ride on it.
+MUX=(-o ControlMaster=auto -o "ControlPath=$HOME/.ssh/cm-%r@%h:%p" -o ControlPersist=8h
+     -o ServerAliveInterval=60 -o ServerAliveCountMax=60 -o TCPKeepAlive=yes)
+
+master_up()     { ssh "${MUX[@]}" -O check "$TARGET" >/dev/null 2>&1; }
+master_socket() { ssh "${MUX[@]}" -G "$TARGET" | awk '/^controlpath /{print $2}'; }
+
+ensure_master() {
+  master_up && return 0
+  mkdir -p "$HOME/.ssh"; chmod 700 "$HOME/.ssh"
+  echo "ollama-tunnel: connecting to $CAEN_NODE ${dim}(password, then Duo)${off}"
+  ssh "${MUX[@]}" -f -N "$TARGET"
+}
+
+# The relay port is on the node's loopback, so the only way to see it is to ask
+# that machine.
+far_up()    { ssh "${MUX[@]}" "$TARGET" "ss -ltn 2>/dev/null | grep -q ':$RELAY_PORT '" >/dev/null 2>&1; }
+ollama_up() { curl -sf -m 5 "http://127.0.0.1:$PORT/api/tags" >/dev/null 2>&1; }
+
+# Both address families, spelled out. Bound to only one of them, curl finds the
+# tunnel and aider does not: curl tries every address a name resolves to,
+# litellm resolves 127.0.0.1 and never falls back. That asymmetry is why the
+# failure reads as "curl works, aider says connection refused".
+forwards() { echo "127.0.0.1:$PORT:127.0.0.1:$RELAY_PORT" "[::1]:$PORT:127.0.0.1:$RELAY_PORT"; }
+
+# ------------------------------------------------------------------ commands
+
+cmd_setup() {
+  uniq="${1:-}"
+  if [ -z "$uniq" ] && [ -f "$LOCAL_CONF" ]; then . "$LOCAL_CONF"; uniq="$CAEN_USER"; fi
+  [ -n "$uniq" ] || die "usage: ollama-tunnel setup <your-uniqname>"
+
+  # Derived by default. Override either to keep a pin you already have, or to
+  # put a whole section on one node deliberately:
+  #   CAEN_NODE=caen-vnc-mi03.engin.umich.edu ollama-tunnel setup <uniqname>
+  node="${CAEN_NODE:-$(derive_node "$uniq")}"
+  resolves "$node" || node="caen-vnc-mi01.engin.umich.edu"
+  port="${RELAY_PORT:-$(derive_port "$uniq")}"
+  origin="derived from '$uniq', so it will not clash with anyone else's"
+  [ -n "${CAEN_NODE:-}${RELAY_PORT:-}" ] && origin="pinned by hand"
+
+  echo "ollama-tunnel: writing this to your CAEN home ${dim}(password, then Duo)${off}"
+  write_conf "$uniq" "$node" "$port"
+
+  cat <<EOF
+
+${bold}Set up.${off} You and your lab computer will meet on:
+
+  node    $node
+  port    $port   ${dim}($origin)${off}
+
+On the lab computer: ollama-relay start
+Then back here:      ollama-tunnel start
+EOF
+}
+
+cmd_start() {
+  ensure_master
+  refresh_conf
+  for f in $(forwards); do
+    ssh "${MUX[@]}" -O cancel -L "$f" "$TARGET" >/dev/null 2>&1 || true
+    ssh "${MUX[@]}" -O forward -L "$f" "$TARGET" || die "the node refused $f"
+  done
+  if ollama_up; then
+    echo "ollama-tunnel: ${green}up${off}. Ollama answering at http://127.0.0.1:$PORT"
+    echo "               next:  aider-ollama start"
+    return 0
+  fi
+  echo "ollama-tunnel: ${yellow}the forward is open but nothing answered${off}" >&2
+  if far_up; then
+    echo "  $CAEN_NODE is carrying $RELAY_PORT, so the lab half is connected." >&2
+    echo "  Ollama itself is not running there. On the lab computer:  ollama-relay status" >&2
+  else
+    echo "  Nothing on $RELAY_PORT at $CAEN_NODE - the lab half is down." >&2
+    echo "  On the lab computer:  ollama-relay start" >&2
+    echo "  If that says the node refused every port:  ollama-tunnel node --next" >&2
+  fi
+  return 1
+}
+
+# Try the polite exit regardless of what any check thinks, then confirm by
+# looking for the socket. A teardown must never report success on a tunnel it
+# left running - and after `node` moves the pin, `-O check` starts asking about
+# a machine that was never connected and cheerfully answers "not up".
+cmd_stop() {
+  for f in $(forwards); do
+    ssh "${MUX[@]}" -O cancel -L "$f" "$TARGET" >/dev/null 2>&1 || true
+  done
+  ssh "${MUX[@]}" -O exit "$TARGET" >/dev/null 2>&1 || true
+  sock="$(master_socket 2>/dev/null)" || sock=""
+  if [ -n "$sock" ] && [ -S "$sock" ]; then
+    echo "ollama-tunnel: ${red}could not close it${off} - socket still at $sock" >&2
+    echo "               kill that ssh process directly, then re-check." >&2
+    exit 1
+  fi
+  echo "ollama-tunnel: down."
+}
+
+# There is no way to ask which nodes are free: the ports are on their loopback,
+# and reaching another node to look costs a Duo of its own. So the escape hatch
+# is not "find a good one", it is "move on" - `--next` walks mi01..mi18 in a
+# ring, which needs no knowledge and cannot pick the machine you just left.
+next_node() {
+  n="$(printf '%s' "$CAEN_NODE" | sed -n 's/^caen-vnc-mi\([0-9]*\)\..*/\1/p')"
+  [ -n "$n" ] || n=0
+  printf 'caen-vnc-mi%02d.engin.umich.edu\n' $(( (10#$n % 18) + 1 ))
+}
+
+cmd_node() {
+  if [ -z "${1:-}" ]; then echo "$CAEN_NODE"; return 0; fi
+  case "$1" in
+    --next)            new="$(next_node)" ;;
+    *.engin.umich.edu) new="$1" ;;
+    caen-vnc-mi*)      new="$1.engin.umich.edu" ;;
+    mi*)               new="caen-vnc-$1.engin.umich.edu" ;;
+    *) die "'$1' is not a CAEN node name (try --next, or mi07)" ;;
+  esac
+  resolves "$new" || die "$new does not resolve"
+  # Write before tearing down, so the write can ride the held connection.
+  write_conf "$CAEN_USER" "$new" "$RELAY_PORT"
+  cmd_stop
+  echo "ollama-tunnel: both halves now meet on $new"
+  echo "               lab computer:  ollama-relay restart"
+  echo "               here:          ollama-tunnel start"
+}
+
+cmd_status() {
+  echo "Node:         $TARGET"
+  echo "Port:         $RELAY_PORT ${dim}on the node${off}, $PORT ${dim}here${off}"
+  if master_up; then
+    echo "Connection:   ${green}held${off}"
+  else
+    echo "Connection:   ${red}down${off} ${dim}(ollama-tunnel start)${off}"
+  fi
+  if master_up; then
+    if far_up; then
+      echo "Lab half:     ${green}carrying${off} - $CAEN_NODE is listening on $RELAY_PORT"
+    else
+      echo "Lab half:     ${red}down${off} - nothing on $RELAY_PORT there"
+      echo "              ${dim}on the lab computer: ollama-relay start${off}"
+      echo "              ${dim}node busy or down?   ollama-tunnel node --next${off}"
+    fi
+  fi
+  if ollama_up; then
+    echo "Ollama:       ${green}answering${off} through the tunnel"
+    curl -sf -m 5 "http://127.0.0.1:$PORT/api/tags" \
+      | tr ',{}' '\n\n\n' | sed -n 's/.*"name":"\([^"]*\)".*/              model: \1/p'
+  else
+    echo "Ollama:       ${red}no answer${off} at http://127.0.0.1:$PORT"
+  fi
+}
+
+case "${1:-status}" in
+  setup)   shift; cmd_setup "${1:-}" ;;
+  start)   load_conf; shift; if [ "${1:-}" = "--build" ]; then cmd_stop; fi; cmd_start ;;
+  stop)    load_conf; cmd_stop ;;
+  restart) load_conf; cmd_stop; exec "$0" start --build ;;
+  status)  load_conf; cmd_status ;;
+  node)    load_conf; shift; cmd_node "${1:-}" ;;
+  *) echo "usage: ollama-tunnel {setup <uniqname>|start|stop|restart|status|node [--next|name]}" >&2
+     exit 2 ;;
+esac

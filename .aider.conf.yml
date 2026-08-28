@@ -1,0 +1,33 @@
+# aider -> Ollama. Nothing in here is specific to a project.
+#
+# Change the model with `aider-ollama model qwen3.5:9b`, which also writes the
+# settings block that model needs. Editing `model:` by hand and skipping that
+# block is the single most confusing way to break this - see
+# .aider.model.settings.yml for what goes wrong.
+#
+# Where Ollama is, as opposed to which model it serves, lives in .env
+# (OLLAMA_API_BASE). That is the only line you change when you move the model
+# to another machine.
+
+model: ollama_chat/qwen3.5:4b
+
+# Commit messages and chat summarisation do not need the model that writes your
+# code. Pinning a small one here keeps those instant when the main model is
+# large, at the cost of keeping two models resident.
+weak-model: ollama_chat/qwen3.5:4b
+
+# House style, loaded read-only every session. Write yours into this file.
+read:
+  - AGENTS.md
+
+dark-mode: true
+auto-commits: true
+
+# Off on purpose: left on, aider rewrites .gitignore every time it starts, and
+# the block in there is yours.
+gitignore: false
+
+# Architect mode proposes an edit and a second pass applies it. Aider takes
+# that hand-off automatically by default; here you see the plan and say yes
+# before anything is written.
+auto-accept-architect: false

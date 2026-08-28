@@ -1,0 +1,179 @@
+#!/usr/bin/env bash
+# RUN THIS ON A CAEN LAB COMPUTER. Your laptop runs ollama-tunnel.
+#
+#   ollama-relay start [--build]   start Ollama here, publish it on the node
+#   ollama-relay stop              stop publishing (leaves Ollama running)
+#   ollama-relay restart           stop, then start --build
+#   ollama-relay status            every hop, reported separately
+#
+#   this machine  --ssh -R-->  CAEN node  <--ssh -L--  your laptop
+#   ollama on the GPU          (a meeting            ollama-tunnel
+#                               point, runs               aider
+#                               nothing)
+#
+# Nothing can SSH *into* this machine, only out of it, so the tunnel is built
+# from this end and pushed outward: `ssh -R` opens a listener on the node that
+# comes back down this connection. The machine that owns the GPU dials out; the
+# machine that wants the GPU never dials in. That listener is on the node's
+# loopback, which is why your laptop needs its own `-L` to meet it rather than
+# connecting to the node's port directly. That is not a limitation to work
+# around - a relay port open to the network would be an unauthenticated Ollama
+# on a shared university machine.
+#
+# The node and port come from ~/.config/aider-ollama/tunnel.conf, written by
+# `ollama-tunnel setup` on your laptop. Your CAEN home is mounted here, so
+# that file is already local and this machine needs no configuring.
+set -euo pipefail
+
+case "$(uname -s)" in
+  Darwin) echo "ollama-relay: this is your laptop - run ollama-tunnel here." >&2
+          exit 1 ;;
+esac
+
+bold=$'\033[1m'; dim=$'\033[2m'; green=$'\033[32m'; red=$'\033[31m'; yellow=$'\033[33m'; off=$'\033[0m'
+[ -t 1 ] || { bold=""; dim=""; green=""; red=""; yellow=""; off=""; }
+die() { echo "ollama-relay: $1" >&2; exit 1; }
+
+CONF="${XDG_CONFIG_HOME:-$HOME/.config}/aider-ollama/tunnel.conf"
+PORT="${OLLAMA_TUNNEL_PORT:-11434}"     # where Ollama listens, on this machine
+LOG="$HOME/ollama-relay.log"
+
+[ -f "$CONF" ] || die "no $CONF
+  On your laptop first:  ollama-tunnel setup <your-uniqname>"
+# shellcheck disable=SC1090
+. "$CONF"
+TARGET="$CAEN_USER@$CAEN_NODE"
+
+log() { printf '%s %s: %s\n' "$(date +%H:%M:%S)" "$(hostname -s)" "$*" >>"$LOG"; }
+say() { echo "ollama-relay: $*"; log "$*"; }
+
+# One held connection for everything below. CAEN accepts only
+# keyboard-interactive auth - password plus Duo - so an unattended one is
+# impossible; authenticate once and let every later ssh ride on it.
+#
+# ControlPath has to be under /tmp. It is a unix socket, and a socket cannot
+# live on the CIFS share your home directory is mounted from - in ~/.ssh it
+# fails with a "cannot bind" that says nothing about the real cause.
+MUX=(-o ControlMaster=auto -o "ControlPath=/tmp/aider-ollama-mux-%r@%h:%p" -o ControlPersist=8h
+     -o ServerAliveInterval=60 -o ServerAliveCountMax=60 -o TCPKeepAlive=yes)
+FWD="127.0.0.1:$RELAY_PORT:127.0.0.1:$PORT"
+
+master_up()     { ssh "${MUX[@]}" -O check "$TARGET" >/dev/null 2>&1; }
+master_socket() { ssh "${MUX[@]}" -G "$TARGET" | awk '/^controlpath /{print $2}'; }
+ollama_up()     { curl -sf -m 5 "http://127.0.0.1:$PORT/api/tags" >/dev/null 2>&1; }
+far_up()        { ssh "${MUX[@]}" "$TARGET" "ss -ltn 2>/dev/null | grep -q ':$RELAY_PORT '" >/dev/null 2>&1; }
+
+# CAEN sets KillUserProcesses=yes, so systemd kills every process you own the
+# moment your login session ends - Ollama, the held connection and the tunnel
+# with it. No SSH option survives that, because it is not SSH doing the
+# killing, which is why it presents as "my connection keeps dropping" rather
+# than as having logged out. Lingering exempts you, needs no root, and sticks.
+ensure_linger() {
+  command -v loginctl >/dev/null 2>&1 || return 0
+  [ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null)" = "yes" ] && return 0
+  if loginctl enable-linger "$USER" 2>/dev/null; then
+    say "enabled lingering, so this survives you logging out"
+  else
+    say "${yellow}could not enable lingering${off} - this dies when you log out"
+    echo "               try by hand:  loginctl enable-linger $USER" >&2
+  fi
+}
+
+start_ollama() {
+  ollama_up && return 0
+  command -v ollama >/dev/null 2>&1 || die "no ollama on this machine. Without root:
+  curl -fsSL https://ollama.com/install.sh | OLLAMA_INSTALL_DIR=\$HOME/.local sh"
+  say "starting Ollama here..."
+  nohup setsid ollama serve >"$HOME/ollama.log" 2>&1 </dev/null &
+  for _ in $(seq 1 30); do ollama_up && return 0; sleep 1; done
+  die "Ollama did not come up - see ~/ollama.log"
+}
+
+start_relay() {
+  if ! master_up; then
+    say "connecting to $CAEN_NODE ${dim}(password, then Duo)${off}"
+    ssh "${MUX[@]}" -f -N "$TARGET" 2>>"$LOG" || die "could not connect - see $LOG"
+  fi
+  # Ask the held connection for the forward rather than passing -R when it
+  # opens. If one to this node is already up, a second ssh multiplexes onto it
+  # and its own -R is silently dropped, because the master owns the forwards:
+  # you get a healthy-looking session and a dead tunnel.
+  #
+  # A refusal means someone else on that shared node holds the port. Walk to
+  # the next one and keep the connection we already paid a Duo for: a port is
+  # the cheap thing to change, a node is not. The winning port goes into the
+  # config, which lives in the CAEN home your laptop can also read, so the
+  # other half picks it up on its next start without being told.
+  for try in $(seq 0 9); do
+    port=$(( RELAY_PORT + try ))
+    [ "$port" -le 11999 ] || break
+    ssh "${MUX[@]}" -O cancel -R "127.0.0.1:$port:127.0.0.1:$PORT" "$TARGET" >>"$LOG" 2>&1 || true
+    if ssh "${MUX[@]}" -O forward -R "127.0.0.1:$port:127.0.0.1:$PORT" "$TARGET" >>"$LOG" 2>&1; then
+      if [ "$port" != "$RELAY_PORT" ]; then
+        say "$RELAY_PORT was taken on $CAEN_NODE; moved to ${bold}$port${off}"
+        printf 'CAEN_USER=%s\nCAEN_NODE=%s\nRELAY_PORT=%s\n' "$CAEN_USER" "$CAEN_NODE" "$port" > "$CONF"
+        RELAY_PORT="$port"
+      fi
+      far_up || die "forward accepted but $CAEN_NODE is not listening on $port - see $LOG"
+      say "${green}up${off}. On your laptop now:  ollama-tunnel start"
+      return 0
+    fi
+  done
+  say "${red}$CAEN_NODE refused every port from $RELAY_PORT up${off}"
+  echo "              that node is busy or unwell. On your laptop:" >&2
+  echo "                  ollama-tunnel node --next    ${dim}(then restart this)${off}" >&2
+  exit 1
+}
+
+# Try the exit regardless of what any check thinks, then confirm against the
+# socket. A teardown must never report success on a tunnel it left running.
+cmd_stop() {
+  ssh "${MUX[@]}" -O cancel -R "$FWD" "$TARGET" >/dev/null 2>&1 || true
+  ssh "${MUX[@]}" -O exit "$TARGET" >/dev/null 2>&1 || true
+  sock="$(master_socket 2>/dev/null)" || sock=""
+  if [ -n "$sock" ] && [ -S "$sock" ]; then
+    echo "ollama-relay: ${red}could not close it${off} - socket still at $sock" >&2
+    echo "              kill that ssh process directly, then re-check." >&2
+    exit 1
+  fi
+}
+
+case "${1:-status}" in
+  start)
+    shift
+    if [ "${1:-}" = "--build" ]; then cmd_stop || true; fi
+    log "--- start ---"
+    ensure_linger
+    start_ollama
+    start_relay
+    ;;
+  stop)
+    cmd_stop
+    say "down. Ollama left running here."
+    ;;
+  restart)
+    cmd_stop || true
+    exec "$0" start --build
+    ;;
+  status)
+    echo "Node:         $TARGET"
+    echo "Port:         $RELAY_PORT ${dim}on the node${off}, $PORT ${dim}here${off}"
+    if command -v loginctl >/dev/null 2>&1; then
+      if [ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null)" = "yes" ]; then
+        echo "Lingering:    ${green}on${off} ${dim}(survives logout)${off}"
+      else
+        echo "Lingering:    ${yellow}off${off} - everything here dies when you log out"
+      fi
+    fi
+    ollama_up && echo "Ollama here:  ${green}running${off} on $PORT" \
+              || echo "Ollama here:  ${red}NOT running${off} - the tunnel will refuse every request"
+    if master_up; then
+      echo "Connection:   ${green}held${off}"
+      far_up && echo "Relay:        ${green}carrying${off} - $CAEN_NODE is listening on $RELAY_PORT" \
+             || echo "Relay:        ${red}not carrying${off} - nothing on $RELAY_PORT there"
+    else
+      echo "Connection:   ${red}down${off} ${dim}(ollama-relay start)${off}"
+    fi
+    ;;
+  *) echo "usage: ollama-relay {start|stop|restart|status}" >&2; exit 2 ;;
+esac
