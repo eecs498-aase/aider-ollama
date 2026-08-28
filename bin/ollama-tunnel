@@ -196,14 +196,12 @@ holder() {
 # variable loses to the file every time.
 say_env() {
   echo
-  echo "  aider finds it through .env in the project you run aider from."
-  echo "  That file ships with both lines; make the ${PORT} one the live one:"
+  echo "  Point aider at it, from the project you run aider in:"
   echo
-  echo "      export OLLAMA_API_BASE=http://127.0.0.1:$PORT"
-  echo "      # export OLLAMA_API_BASE=http://127.0.0.1:11434   <- your own Ollama"
+  echo "      bin/use caen      ${dim}# writes .env for you${off}"
+  echo "      bin/check         ${dim}# proves it works before you start${off}"
   echo
-  echo "  Editing .env is the way. Exporting it in your shell instead does"
-  echo "  nothing, because aider's .env overrides the environment."
+  echo "  ${dim}bin/use local switches back to a model on this machine.${off}"
   echo
 }
 
@@ -333,7 +331,7 @@ cmd_status() {
         echo "              ${dim}not the tunnel - aider will use this, not your lab computer${off}" ;;
     esac
     curl -sf -m 5 "http://127.0.0.1:$PORT/api/tags" \
-      | tr ',{}' '\n\n\n' | sed -n 's/.*"name":"\([^"]*\)".*/              model: \1/p'
+      | tr ',{}' '\n\n\n' | sed -n 's/.*"name": *"\([^"]*\)".*/              model: \1/p'
   else
     echo "Ollama:       ${red}no answer${off} at http://127.0.0.1:$PORT"
   fi

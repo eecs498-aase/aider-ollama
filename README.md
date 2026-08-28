@@ -32,26 +32,65 @@ your PATH, so there is only ever one way to spell a command.
 
 You also need aider (`python3 -m pip install aider-install && aider-install`).
 
-## The dotfiles, which every row needs
+## Set up a project
+
+Copy the config and the two helper commands into whatever you are working on:
 
 ```bash
-cp .aider.conf.yml .aider.model.settings.yml .aider.model.metadata.json .env.example /path/to/project/
-cd /path/to/project
-cp .env.example .env
+cd /path/to/your/project
+mkdir -p bin
+cp ~/aider-ollama/.aider.conf.yml ~/aider-ollama/.aider.model.settings.yml \
+   ~/aider-ollama/.aider.model.metadata.json ~/aider-ollama/AGENTS.md .
+cp ~/aider-ollama/.env.local ~/aider-ollama/.env.caen .
+cp ~/aider-ollama/bin/use ~/aider-ollama/bin/check bin/
 ```
 
-`.env` is the one file that differs between the three rows: it says where
-Ollama is. Everything else is identical.
+Then pick which Ollama aider talks to, and prove it works:
 
-**The one thing worth understanding.** A model with no entry in
-`.aider.model.settings.yml` gets a 2048-token context, because that is what
-litellm assumes for a model it has never heard of. aider then truncates your
-files to fit and the model starts inventing functions that exist three lines
-further down. It looks exactly like a stupid model, and it is the reason this
-repo exists at all. Every model named in that file already has a block. If you
-switch to one that does not, copy an existing block and change the name -
-`num_ctx` there and `max_input_tokens` in `.aider.model.metadata.json` should
-match. To change models, edit the `model:` line in `.aider.conf.yml`.
+```bash
+bin/use local     # the model on this machine        127.0.0.1:11434
+bin/use caen      # the model on a lab machine       127.0.0.1:11435
+bin/use           # which one is active right now
+bin/check         # everything that silently ruins a session, checked
+```
+
+`bin/use` writes `.env`, which is the file aider reads. That is the whole
+difference between the three rows above - same config, one different line.
+
+### What `bin/check` checks
+
+```
+  ok    .aider.conf.yml is here
+  ok    model: ollama_chat/qwen3.5:4b
+  ok    Ollama answers at http://127.0.0.1:11435
+  ok    served over the tunnel, from another machine
+  ok    qwen3.5:4b is pulled
+  ok    context is 32768 tokens, not 2048
+  ok    aider is installed
+  ok    the model replied: ready
+
+All good. Run aider in this directory.
+```
+
+Each line is something that ruins a session quietly if it is wrong. Two are
+worth knowing about before they happen.
+
+**The context window.** A model with no entry in `.aider.model.settings.yml`
+gets 2048 tokens, because that is what litellm assumes for a model it has never
+heard of. aider truncates your files to fit and the model starts inventing
+functions that exist three lines further down. It reads as a stupid model
+rather than a misconfiguration, and it is the reason this repo exists. Every
+model named in that file already has a block; if you add one, copy a block and
+change the name, keeping `num_ctx` in step with `max_input_tokens` in
+`.aider.model.metadata.json`.
+
+**Which machine actually answered.** `bin/check` says whether the model came
+over the tunnel or from something running here, and complains if that does not
+match what `.env` asked for - so a local Ollama sitting on the tunnel's port
+gets caught rather than quietly serving you the wrong model.
+
+To change models, edit the `model:` line in `.aider.conf.yml`, then run
+`bin/check` again.
 
 ## A: Everything on your laptop
 
@@ -63,8 +102,8 @@ ollama pull qwen3.5:4b    # whatever .aider.conf.yml names
 aider
 ```
 
-`.env` as shipped already points at `127.0.0.1:11434`, which is where Ollama
-puts itself. Nothing wraps aider. That is the whole thing.
+`bin/use local` points aider here, which is where Ollama puts itself. Nothing
+wraps aider. That is the whole thing.
 
 Whether your laptop can hold a useful model is the catch - a 9B wants about
 16GB of RAM to be comfortable. If it cannot, use row B or C.
@@ -88,11 +127,12 @@ without the root. It stages the download on local disk rather than in your
 home, which matters when home is a network share and would otherwise carry
 1.4GB twice.
 
-Then it is row A again, with `.env` unchanged:
+Then it is row A again - the model is on the machine you are sitting at:
 
 ```bash
 ollama serve &
 ollama pull qwen3.5:9b
+bin/use local && bin/check
 aider
 ```
 
@@ -147,16 +187,16 @@ bin/ollama-relay start      # on the lab computer
 bin/ollama-tunnel start     # on your laptop
 ```
 
-The tunnel lands on **`127.0.0.1:11435`**, not 11434. Point aider at it in
-`.env` - the line is already there, commented:
+The tunnel lands on **`127.0.0.1:11435`**, not 11434, so it cannot collide with
+an Ollama running on your laptop. Point aider at it and prove it:
 
-```
-OLLAMA_API_BASE=http://127.0.0.1:11435
+```bash
+bin/use caen
+bin/check
 ```
 
-That is the only change to a project, and switching back to a model on your own
-machine is switching that line back. `status` on either half reports every
-hop separately, so you can see which one is down rather than guessing.
+`bin/use local` switches back. `status` on either tunnel half reports every hop
+separately, so you can see which one is down rather than guessing.
 
 ### If you also run Ollama on your laptop
 
@@ -233,8 +273,8 @@ ollama list
 **`source .env` on its own will not do it.** A plain `KEY=value` that you source
 becomes a shell variable, not an environment variable, and no program you launch
 can see it - `ollama` would silently keep talking to 11434. Which is why every
-line in `.env.example` says `export`: aider's parser strips the word, and the
-file then works both ways.
+line in `.env.local` and `.env.caen` says `export`: aider's parser strips the
+word, and the files then work both ways.
 
 ```bash
 source .env            # works, because the lines say export
@@ -249,6 +289,8 @@ the tunnel. Set it to inspect a remote model, not before starting a local one.
 
 | | |
 |---|---|
+| `bin/use [local\|caen]` | choose which Ollama aider talks to, in this project |
+| `bin/check` | prove the setup works, before you waste a session on it |
 | `bin/install-ollama [--prefix DIR]` | install Ollama into your home, no root |
 | `bin/ollama-tunnel setup <user>` | pick the node and port, once, on your laptop |
 | `bin/ollama-tunnel start\|stop\|restart\|status` | the laptop half |

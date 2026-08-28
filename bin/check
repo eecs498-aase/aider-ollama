@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# Prove the setup works, from the project you are standing in.
+#
+#   bin/check
+#
+# Every line is something that silently ruins a session if it is wrong. The one
+# that catches most people is the context window: a model with no settings
+# block gets 2048 tokens, aider truncates your files, and the model looks
+# stupid rather than misconfigured.
+set -uo pipefail
+
+green=$'\033[32m'; red=$'\033[31m'; yellow=$'\033[33m'; dim=$'\033[2m'; off=$'\033[0m'
+[ -t 1 ] || { green=""; red=""; yellow=""; dim=""; off=""; }
+fails=0
+ok()   { printf '  %sok%s    %s\n'   "$green" "$off" "$1"; }
+bad()  { printf '  %sFAIL%s  %s\n'   "$red"   "$off" "$1"; fails=$((fails+1)); }
+warn() { printf '  %swarn%s  %s\n'   "$yellow" "$off" "$1"; }
+note() { printf '        %s%s%s\n'   "$dim" "$1" "$off"; }
+
+[ -f .env ] || { echo "bin/check: no .env here. Run bin/use local or bin/use caen first." >&2; exit 1; }
+set -a; . ./.env; set +a
+API="${OLLAMA_API_BASE:-http://127.0.0.1:11434}"
+PORT="${API##*:}"
+CONF=".aider.conf.yml"; SET=".aider.model.settings.yml"; META=".aider.model.metadata.json"
+MODEL="$(sed -n 's/^model: *ollama_chat\///p' "$CONF" 2>/dev/null | head -1)"
+
+echo "Checking $PWD"
+echo
+
+# --- the files aider needs -------------------------------------------------
+for f in "$CONF" "$SET" "$META"; do
+  [ -f "$f" ] && ok "$f is here" || bad "$f is missing - copy it from the aider-ollama clone"
+done
+[ -n "$MODEL" ] && ok "model: ollama_chat/$MODEL" || bad "no model: line in $CONF"
+
+# --- is anything serving ---------------------------------------------------
+if curl -sf -m 5 "$API/api/tags" >/dev/null 2>&1; then
+  ok "Ollama answers at $API"
+else
+  bad "nothing answers at $API"
+  case "$PORT" in
+    11435) note "that is the tunnel's port - on your laptop: bin/ollama-tunnel status" ;;
+    *)     note "start Ollama: ollama serve   (or open the Ollama app)" ;;
+  esac
+fi
+
+# --- local or tunnelled, and is that what .env asked for -------------------
+if curl -sf -m 5 "$API/api/tags" >/dev/null 2>&1; then
+  pid="$(lsof -nP -iTCP:"$PORT" -sTCP:LISTEN -t 2>/dev/null | head -1)"
+  who="$([ -n "$pid" ] && ps -o comm= -p "$pid" 2>/dev/null | sed 's|.*/||')"
+  case "$who" in
+    ssh) ok "served over the tunnel, from another machine"
+         [ "$PORT" = 11434 ] && warn "but .env says 11434, which is usually the local one" ;;
+    "")  ok "served from $API" ;;
+    *)   ok "served by $who on this machine"
+         [ "$PORT" = 11435 ] && warn "11435 is the tunnel's port, and this is a local $who - it is shadowing the tunnel" ;;
+  esac
+fi
+
+# --- the model itself ------------------------------------------------------
+if [ -n "$MODEL" ] && curl -sf -m 5 "$API/api/tags" >/dev/null 2>&1; then
+  if curl -sf -m 5 "$API/api/tags" | tr ',{}' '\n\n\n' | sed -n 's/.*"name": *"\([^"]*\)".*/\1/p' | grep -qx "$MODEL"; then
+    ok "$MODEL is pulled"
+  else
+    bad "$MODEL is not pulled on that machine"
+    note "ollama pull $MODEL   (on whichever machine serves $API)"
+  fi
+fi
+
+# --- the context trap ------------------------------------------------------
+if [ -n "$MODEL" ] && grep -q "^- name: ollama_chat/$MODEL\$" "$SET" 2>/dev/null; then
+  ctx="$(sed -n "/^- name: ollama_chat\/$MODEL\$/,/^\$/p" "$SET" | sed -n 's/.*num_ctx: //p')"
+  ok "context is ${ctx:-?} tokens, not 2048"
+  m="$(sed -n "/\"ollama_chat\/$MODEL\"/,/}/p" "$META" | sed -n 's/.*"max_input_tokens": *\([0-9]*\).*/\1/p')"
+  [ -n "$m" ] && [ "$m" != "$ctx" ] && warn "$META says $m, $SET says $ctx - keep them in step"
+else
+  [ -n "$MODEL" ] && bad "no settings block for $MODEL - aider will truncate your files at 2048 tokens"
+  [ -n "$MODEL" ] && note "copy a block in $SET and change the name"
+fi
+
+# --- aider ----------------------------------------------------------------
+command -v aider >/dev/null 2>&1 && ok "aider is installed" \
+  || bad "no aider - python3 -m pip install aider-install && aider-install"
+
+# --- does it actually answer ----------------------------------------------
+if [ -n "$MODEL" ] && curl -sf -m 5 "$API/api/tags" >/dev/null 2>&1; then
+  # Only worth a progress line on a terminal, where \r can take it back.
+  [ -t 1 ] && printf '  %s...%s   asking the model to reply (loading it can take a minute)\r' "$dim" "$off"
+  reply="$(curl -sf -m 180 "$API/api/chat" \
+    -d "{\"model\":\"$MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"reply with the single word: ready\"}],\"stream\":false,\"think\":false}" \
+    2>/dev/null | tr ',{}' '\n\n\n' | sed -n 's/.*"content": *"\([^"]*\)".*/\1/p' | tr -d ' \n.' | head -1)"
+  if [ -n "$reply" ]; then ok "the model replied: $reply                                   "
+  else bad "the model did not reply                                                 "
+       note "it is reachable but not generating - check it fits in memory: ollama ps"; fi
+fi
+
+echo
+if [ "$fails" = 0 ]; then
+  echo "${green}All good.${off} Run ${dim}aider${off} in this directory."
+else
+  echo "${red}$fails problem(s).${off} Fix the FAIL lines above and run bin/check again."
+  exit 1
+fi
