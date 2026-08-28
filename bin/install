@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Symlink the tunnel commands into ~/.local/bin so they work from any directory.
 #
+# bin/install-ollama is deliberately not among them: it is a one-shot bootstrap
+# you run from this clone, before anything of ours is on your PATH.
+#
 #   bin/install            link them
 #   bin/install --remove   unlink them
 #
@@ -9,7 +12,7 @@ set -euo pipefail
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEST="${PREFIX:-$HOME/.local/bin}"
-CMDS="ollama-tunnel ollama-relay install-ollama"
+CMDS="ollama-tunnel ollama-relay"
 
 mkdir -p "$DEST"
 for c in $CMDS; do

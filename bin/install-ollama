@@ -2,9 +2,9 @@
 # Install Ollama into your home directory. No root, no sudo, nothing outside
 # $PREFIX.
 #
-#   install-ollama                 into ~/.local
-#   install-ollama --prefix DIR    somewhere else
-#   install-ollama --force         reinstall over an existing copy
+#   bin/install-ollama                 into ~/.local
+#   bin/install-ollama --prefix DIR    somewhere else
+#   bin/install-ollama --force         reinstall over an existing copy
 #
 # The official installer at ollama.com/install.sh is not an option on a machine
 # where you are not root: it writes to /usr/local and calls sudo, and setting

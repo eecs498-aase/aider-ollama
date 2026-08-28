@@ -19,12 +19,12 @@ You need [Ollama](https://ollama.com/download) and aider
 (`python3 -m pip install aider-install && aider-install`).
 
 For the config alone, you only need the dotfiles - see below. `bin/install`
-puts this repo's commands on your PATH:
+puts the two tunnel commands on your PATH:
 
 ```bash
 git clone git@github.com:eecs498-aase/aider-ollama.git
 cd aider-ollama
-bin/install          # symlinks into ~/.local/bin
+bin/install          # symlinks ollama-tunnel and ollama-relay into ~/.local/bin
 ```
 
 ### Installing Ollama where you are not root
@@ -34,7 +34,7 @@ On a lab machine, `ollama.com/install.sh` is not an option: it writes to
 because it also wants to register a systemd service.
 
 ```bash
-install-ollama          # unpacks the release tarball into ~/.local
+bin/install-ollama      # unpacks the release tarball into ~/.local
 ```
 
 The tarball has exactly the layout of the prefix the official installer wants -
@@ -148,7 +148,7 @@ does not care.
 
 | | |
 |---|---|
-| `install-ollama [--prefix DIR]` | install Ollama into your home, no root |
+| `bin/install-ollama [--prefix DIR]` | install Ollama into your home, no root |
 | `ollama-tunnel setup <user>` | pick the node and port, once, on your laptop |
 | `ollama-tunnel start\|stop\|restart\|status` | the laptop half |
 | `ollama-tunnel node [--next\|<name>]` | show or move the node both halves meet on |
