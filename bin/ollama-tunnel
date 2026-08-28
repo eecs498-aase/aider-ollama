@@ -67,7 +67,12 @@ resolves() { getent hosts "$1" >/dev/null 2>&1 || [ -n "$(dig +short "$1" 2>/dev
 # makes a collision with another person unlikely. `cksum` is POSIX and returns
 # the same number on macOS and on Linux, which is the only reason both ends can
 # compute it independently.
-derive_port() { echo $(( 11500 + $(printf '%s' "$1" | cksum | cut -d' ' -f1) % 1000 )); }
+# ollama-relay walks within this same window when a port is taken; keep them
+# in step. They were not once, and the half of all uniqnames that derived above
+# the relay's old ceiling were told every port was busy without one being tried.
+PORT_MIN=11500
+PORT_SPAN=1000
+derive_port() { echo $(( PORT_MIN + $(printf '%s' "$1" | cksum | cut -d' ' -f1) % PORT_SPAN )); }
 
 # Spread people over the eighteen nodes, for the same reason.
 derive_node() {

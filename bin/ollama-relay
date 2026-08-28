@@ -37,6 +37,9 @@ die() { echo "ollama-relay: $1" >&2; exit 1; }
 CONF="${XDG_CONFIG_HOME:-$HOME/.config}/aider-ollama/tunnel.conf"
 PORT="${OLLAMA_TUNNEL_PORT:-11434}"     # where Ollama listens, on this machine
 LOG="$HOME/ollama-relay.log"
+# The window ollama-tunnel derives ports from. The walk below stays inside it.
+PORT_MIN=11500
+PORT_SPAN=1000
 
 [ -f "$CONF" ] || die "no $CONF
   On your laptop first:  ollama-tunnel setup <your-uniqname>"
@@ -100,16 +103,25 @@ start_relay() {
   # and its own -R is silently dropped, because the master owns the forwards:
   # you get a healthy-looking session and a dead tunnel.
   #
-  # A refusal means someone else on that shared node holds the port. Walk to
-  # the next one and keep the connection we already paid a Duo for: a port is
-  # the cheap thing to change, a node is not. The winning port goes into the
-  # config, which lives in the CAEN home your laptop can also read, so the
-  # other half picks it up on its next start without being told.
-  for try in $(seq 0 9); do
-    port=$(( RELAY_PORT + try ))
-    [ "$port" -le 11999 ] || break
+  # A refused port means someone else on that shared node holds it. Walk to the
+  # next and keep the connection we already paid a Duo for: a port is the cheap
+  # thing to change, a node is not. The winning port goes into the config, which
+  # lives in the CAEN home your laptop also reads, so the other half picks it up
+  # on its next start without being told.
+  #
+  # The walk wraps inside the same window ollama-tunnel derives ports from. It
+  # used to stop dead at 11999 while that window ran to 12499, so half of all
+  # uniqnames made no attempt at all and were told every port was busy.
+  for try in $(seq 0 19); do
+    if [ "$try" = 0 ]; then
+      port="$RELAY_PORT"          # honour a pinned port even outside the window
+    else
+      # Doubled modulo because bash's truncates toward zero: a pinned port
+      # below the window would otherwise walk downwards, out of it.
+      port=$(( PORT_MIN + ((RELAY_PORT - PORT_MIN + try) % PORT_SPAN + PORT_SPAN) % PORT_SPAN ))
+    fi
     ssh "${MUX[@]}" -O cancel -R "127.0.0.1:$port:127.0.0.1:$PORT" "$TARGET" >>"$LOG" 2>&1 || true
-    if ssh "${MUX[@]}" -O forward -R "127.0.0.1:$port:127.0.0.1:$PORT" "$TARGET" >>"$LOG" 2>&1; then
+    err="$(ssh "${MUX[@]}" -O forward -R "127.0.0.1:$port:127.0.0.1:$PORT" "$TARGET" 2>&1)" && {
       if [ "$port" != "$RELAY_PORT" ]; then
         say "$RELAY_PORT was taken on $CAEN_NODE; moved to ${bold}$port${off}"
         printf 'CAEN_USER=%s\nCAEN_NODE=%s\nRELAY_PORT=%s\n' "$CAEN_USER" "$CAEN_NODE" "$port" > "$CONF"
@@ -118,10 +130,20 @@ start_relay() {
       far_up || die "forward accepted but $CAEN_NODE is not listening on $port - see $LOG"
       say "${green}up${off}. On your laptop now:  ollama-tunnel start"
       return 0
-    fi
+    }
+    printf '%s\n' "$err" >>"$LOG"
+    # Only a busy port is worth walking away from. Anything else - a dead
+    # connection, forwarding disallowed - fails the same way on every port, and
+    # blaming contention for it sends you hunting the wrong problem.
+    case "$err" in
+      *"remote port forwarding failed for listen port"*) ;;
+      *) say "${red}the forward was refused, and not because the port is taken${off}"
+         printf '%s\n' "$err" | sed 's/^/              /' >&2
+         exit 1 ;;
+    esac
   done
-  say "${red}$CAEN_NODE refused every port from $RELAY_PORT up${off}"
-  echo "              that node is busy or unwell. On your laptop:" >&2
+  say "${red}$CAEN_NODE had no free port in 20 tries from $RELAY_PORT${off}"
+  echo "              that node is unusually busy. On your laptop:" >&2
   echo "                  ollama-tunnel node --next    ${dim}(then restart this)${off}" >&2
   exit 1
 }
