@@ -12,12 +12,12 @@
 #   lab computer  --ssh -R-->  CAEN node  <--ssh -L--  your laptop
 #   ollama-relay           (a meeting            ollama-tunnel
 #   ollama on the GPU           point, runs               aider
-#                               nothing)           127.0.0.1:11434
+#                               nothing)           127.0.0.1:11435
 #
 # Nothing can SSH into a lab computer, so it dials out and pushes its Ollama
 # port onto a CAEN node's loopback. This script tunnels *in* to meet it there
-# and lands it on 127.0.0.1:11434 here, which is where .env already points
-# aider - so aider needs no telling that the model is on another machine.
+# and lands it on 127.0.0.1:11435 here, which is where .env.caen points aider -
+# so aider needs no telling that the model is on another machine.
 #
 # Both halves must meet on the SAME node, and that is the part people get
 # wrong. `login.engin.umich.edu` is a round-robin over eighteen machines
@@ -198,10 +198,10 @@ say_env() {
   echo
   echo "  Point aider at it, from the project you run aider in:"
   echo
-  echo "      bin/use caen      ${dim}# writes .env for you${off}"
-  echo "      bin/check         ${dim}# proves it works before you start${off}"
+  echo "      cp ~/aider-ollama/.env.caen .env    ${dim}# one line: the 11435 endpoint${off}"
+  echo "      bin/check                           ${dim}# proves it works before you start${off}"
   echo
-  echo "  ${dim}bin/use local switches back to a model on this machine.${off}"
+  echo "  ${dim}.env.local is the same file for a model on this machine.${off}"
   echo
 }
 

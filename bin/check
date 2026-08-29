@@ -17,8 +17,17 @@ bad()  { printf '  %sFAIL%s  %s\n'   "$red"   "$off" "$1"; fails=$((fails+1)); }
 warn() { printf '  %swarn%s  %s\n'   "$yellow" "$off" "$1"; }
 note() { printf '        %s%s%s\n'   "$dim" "$1" "$off"; }
 
-[ -f .env ] || { echo "bin/check: no .env here. Run bin/use local or bin/use caen first." >&2; exit 1; }
-set -a; . ./.env; set +a
+# aider reads .env out of the directory you run it in, so read the same file the
+# same way. A file beats an exported variable here because that is aider's own
+# order; with no file at all, an exported OLLAMA_API_BASE is what aider would
+# use, and so is what gets checked.
+ENV_FROM="the default"
+if [ -f .env ]; then
+  set -a; . ./.env; set +a
+  ENV_FROM=".env"
+elif [ -n "${OLLAMA_API_BASE:-}" ]; then
+  ENV_FROM="\$OLLAMA_API_BASE"
+fi
 API="${OLLAMA_API_BASE:-http://127.0.0.1:11434}"
 PORT="${API##*:}"
 CONF=".aider.conf.yml"; SET=".aider.model.settings.yml"; META=".aider.model.metadata.json"
@@ -32,6 +41,8 @@ for f in "$CONF" "$SET" "$META"; do
   [ -f "$f" ] && ok "$f is here" || bad "$f is missing - copy it from the aider-ollama clone"
 done
 [ -n "$MODEL" ] && ok "model: ollama_chat/$MODEL" || bad "no model: line in $CONF"
+ok "endpoint from $ENV_FROM: $API"
+[ "$ENV_FROM" = "the default" ] && note "nothing set it - cp .env.local .env, or export OLLAMA_API_BASE"
 
 # --- is anything serving ---------------------------------------------------
 if curl -sf -m 5 "$API/api/tags" >/dev/null 2>&1; then
