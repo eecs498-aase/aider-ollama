@@ -14,26 +14,29 @@ aider     reads .env, talks to whatever answers there
 ```
 
 Ollama is the piece that wants a GPU. aider is a small program that sits with your
-files. They can be on the same machine or on different ones, which gives three
-setups:
+files. Where you put each one gives three setups.
 
-| | Ollama runs on | aider runs on | |
-|---|---|---|---|
-| **[Setup A](#setup-a--both-on-your-laptop)** | your laptop | your laptop | start here |
-| **[Setup B](#setup-b--both-on-a-caen-machine)** | a CAEN machine | that same machine | the simple way to use a lab GPU |
-| **[Setup C](#setup-c--ollama-on-caen-aider-on-your-laptop)** | a CAEN machine | your laptop | your own files, plus an SSH tunnel |
+**[Setup A](#setup-a--both-on-your-laptop)** puts both on your laptop. Start here.
+
+**[Setup B](#setup-b--both-on-a-caen-machine)** puts both on a CAEN lab machine.
+You sit at the machine and work there. It has an NVIDIA GPU, so the models your
+laptop struggles with are comfortable. It is Setup A over again with one extra step
+at the front.
+
+**[Setup C](#setup-c--ollama-on-caen-aider-on-your-laptop)** leaves aider on your
+laptop and puts only Ollama on the CAEN machine, reached over an SSH tunnel. Your
+own files and editor against the lab GPU. It has the most moving parts, so take it
+when you want it rather than to get started.
 
 Do A and B. They are the same commands twice, and between them you have a model on
-whatever machine you happen to be sitting at. C is worth having later, when you
-want your own editor against the lab GPU; it has the most moving parts.
-
-Switching between them is one line in `.env`. You are not choosing one forever.
+whatever machine you are sitting at. Switching is one line in `.env`, so you are
+not choosing one forever.
 
 ---
 
 ## First, on whichever machine you are setting up
 
-Do this once per machine, and it is the same on both.
+Once per machine.
 
 **1. Clone this repo.**
 
@@ -42,12 +45,16 @@ git clone https://github.com/eecs498-aase/aider-ollama.git
 cd aider-ollama
 ```
 
-**2. Install aider.**
+**2. Install aider.** On your own laptop, the normal installer:
 
 ```bash
 python3 -m pip install aider-install && aider-install
 aider --version
 ```
+
+On a CAEN machine, **do not run that** — it lands in your NFS home and aider will
+be painfully slow to start. Use `bin/install-aider` instead, covered in
+[Setup B](#setup-b--both-on-a-caen-machine).
 
 **3. Stay in this directory for now.** Every command is `bin/something`, run from
 here. Nothing installs onto your PATH, so there is only ever one way to spell a
@@ -104,25 +111,63 @@ same commands over again, so do it before you need it.
 
 ## Setup B — both on a CAEN machine
 
-Sit at the machine and run both halves there. It has an NVIDIA GPU, so the models
-your laptop struggles with are comfortable, and there is no tunnel to go wrong.
-This is Setup A again with one extra step at the front.
+Sit at the machine and run both there. It has an NVIDIA GPU, so the models your
+laptop struggles with are comfortable, and there is no tunnel to go wrong.
 
-**1. Install Ollama without root:**
+**Your CAEN home is an NFS share, and that changes every install step.** Nothing
+you use often should live in it. A program started from your home reads every one
+of its files over the network, so aider takes tens of seconds to reach a prompt and
+feels broken; a model loaded from your home drags gigabytes across the network on
+every cold start. The whole of this section is Setup A with the installs pointed at
+local disk instead.
+
+The cost is that local disk belongs to one machine and gets cleaned. Coming back to
+a different lab machine, or after a reboot, you run steps 1 to 3 again. That is
+about a minute, which is less than one slow aider startup.
+
+**1. Install aider onto local disk:**
 
 ```bash
-bin/install-ollama
+bin/install-aider
+```
+
+It builds a virtualenv under `$TMPDIR/aider-$USER`, picks a Python that aider
+publishes wheels for rather than whatever `python3` happens to be, and keeps pip's
+cache out of your home too. It refuses a `--prefix` inside `$HOME`, since that is
+the one thing it exists to avoid. Then put it on your PATH, as the script prints:
+
+```bash
+export PATH="${TMPDIR:-/tmp}/aider-$USER/bin:$PATH"
+aider --version
+```
+
+**2. Install Ollama without root:**
+
+```bash
+bin/install-ollama --prefix "${TMPDIR:-/tmp}/ollama-$USER"
+export PATH="${TMPDIR:-/tmp}/ollama-$USER/bin:$PATH"
 ```
 
 You are not root on those machines, and `ollama.com/install.sh` writes to
 `/usr/local` and calls `sudo`. `OLLAMA_INSTALL_DIR` does not stop it, because it
 also wants to register a systemd service. This script unpacks the release tarball
-into `~/.local` instead. The tarball has exactly the layout of the prefix the
-official installer wants (`bin/ollama`, `lib/ollama/*`), so that is the same install
-without the root. It stages the download on local disk rather than in your home,
-which matters when home is a network share that would otherwise carry 1.4 GB twice.
+instead, and the tarball has exactly the layout of the prefix the official
+installer wants (`bin/ollama`, `lib/ollama/*`), so that is the same install without
+the root. Its default prefix is `~/.local`, which is right on your laptop and wrong
+here; the `--prefix` above puts it on local disk with everything else.
 
-**2. Survive your own logout.** Once, ever:
+**3. Put the models on local disk too:**
+
+```bash
+export OLLAMA_MODELS="${TMPDIR:-/tmp}/ollama-$USER/models"
+```
+
+This is the one that costs the most if you skip it. Ollama defaults to
+`~/.ollama/models`, and a 9B is around 5 GB that would then cross the network every
+time the model is cold. Export it before starting the server, and in the same shell
+each session.
+
+**4. Survive your own logout.** Once, ever:
 
 ```bash
 loginctl enable-linger $USER
@@ -131,15 +176,11 @@ loginctl enable-linger $USER
 Without it, systemd kills `ollama serve` the moment you log out, which looks like a
 crash rather than a logout.
 
-**3. Start the server:**
+**5. Start the server and pull a model.** The GPU can take a bigger one than your
+laptop:
 
 ```bash
 ollama serve &
-```
-
-**4. Pull a model.** The GPU can take a bigger one than your laptop:
-
-```bash
 ollama pull qwen3.5:9b
 ```
 
@@ -147,22 +188,23 @@ If you pull something other than what `.aider.conf.yml` names, change its `model
 line to match, and check that model has a block in `.aider.model.settings.yml`.
 Every model shipped there already does.
 
-**5. Point aider at it.** The model is on the machine you are sitting at, so this is
+**6. Point aider at it.** The model is on the machine you are sitting at, so this is
 the same file as Setup A:
 
 ```bash
 cp .env.local .env
 ```
 
-**6. Prove it, then work:**
+**7. Prove it, then work:**
 
 ```bash
 bin/check
 aider
 ```
 
-One more CAEN fact: your home is a network share, so aider is slow to start from
-it. Install it to local disk if that bothers you.
+**Clone this repo onto local disk as well** if you are going to work in it. The
+config files are small and NFS is fine for those, but a git repository you actually
+build in is not somewhere you want a network round trip per file.
 
 ---
 
@@ -189,8 +231,9 @@ already has everything it needs.
 ### Once, to set it up
 
 **1. On the CAEN machine**, get Ollama installed and a model pulled, exactly as in
-[Setup B](#setup-b--both-on-a-caen-machine) steps 1 to 4. Skip this if you have
-already done it.
+[Setup B](#setup-b--both-on-a-caen-machine) steps 2 to 5 — local-disk prefix and
+`OLLAMA_MODELS` included, for the same NFS reasons. Skip this if you have already
+done it. You do not need aider there; this setup runs it on your laptop.
 
 **2. On your laptop**, pick the node and port the two halves will meet on:
 
@@ -427,7 +470,8 @@ Which machine each one belongs on.
 | | runs on | |
 |---|---|---|
 | `bin/check` | wherever aider is | prove the setup works, before you waste a session on it |
-| `bin/install-ollama [--prefix DIR]` | a CAEN machine | install Ollama into your home, no root |
+| `bin/install-aider [--prefix DIR]` | a CAEN machine | install aider onto local disk, off the NFS home |
+| `bin/install-ollama [--prefix DIR]` | a CAEN machine | install Ollama without root |
 | `bin/ollama-tunnel setup <user>` | your laptop | pick the node and port, once |
 | `bin/ollama-tunnel start\|stop\|restart\|status` | your laptop | the laptop half of the tunnel |
 | `bin/ollama-tunnel node [--next\|<name>]` | your laptop | show or move the node both halves meet on |
