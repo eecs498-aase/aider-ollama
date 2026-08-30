@@ -1,29 +1,39 @@
 # aider-ollama
 
-A working aider setup for local models, and the scripts for when the model has
-to live on a different machine than you do.
+A working aider setup for local models, and the scripts for when the model has to
+live on a different machine than you do.
 
-## Pick your setup
+## The shape of it
 
-Find your row. You only need that section.
+Three pieces, and it is worth knowing which machine each one is on.
 
-| | Where you sit | Where the model runs | Go to |
+```
+Ollama    serves a model, over HTTP, on a port
+.env      one line: which port that is
+aider     reads .env, talks to whatever answers there
+```
+
+Ollama is the piece that wants a GPU. aider is a small program that sits with your
+files. They can be on the same machine or on different ones, which gives three
+setups:
+
+| | Ollama runs on | aider runs on | |
 |---|---|---|---|
-| **A** | Your laptop | your laptop | [Setup A](#setup-a--everything-on-your-laptop) |
-| **B** | A CAEN lab machine | that same machine | [Setup B](#setup-b--everything-on-a-caen-lab-machine) |
-| **C** | Your laptop | a CAEN lab machine | [Setup C](#setup-c--aider-here-model-there) |
+| **[Setup A](#setup-a--both-on-your-laptop)** | your laptop | your laptop | start here |
+| **[Setup B](#setup-b--both-on-a-caen-machine)** | a CAEN machine | that same machine | the simple way to use a lab GPU |
+| **[Setup C](#setup-c--ollama-on-caen-aider-on-your-laptop)** | a CAEN machine | your laptop | your own files, plus an SSH tunnel |
 
-B is the simple way to use a lab GPU: sit at the machine and work there. C keeps
-your own editor and files while the model runs on the lab machine's GPU. It has
-the most moving parts, so take it only if you want it.
+Do A and B. They are the same commands twice, and between them you have a model on
+whatever machine you happen to be sitting at. C is worth having later, when you
+want your own editor against the lab GPU; it has the most moving parts.
 
-Nothing here is exclusive. Switching between them is one line in `.env`.
+Switching between them is one line in `.env`. You are not choosing one forever.
 
 ---
 
-## First, get the files
+## First, on whichever machine you are setting up
 
-Once, on each machine you will work on.
+Do this once per machine, and it is the same on both.
 
 **1. Clone this repo.**
 
@@ -39,23 +49,23 @@ python3 -m pip install aider-install && aider-install
 aider --version
 ```
 
-**3. Stay in this directory for now.** Everything is `bin/something`, run from
+**3. Stay in this directory for now.** Every command is `bin/something`, run from
 here. Nothing installs onto your PATH, so there is only ever one way to spell a
 command. Moving the config into your own project is
-[the last section](#using-this-in-your-own-project); do that once the checks
-below pass.
-
-Now go to your row's section.
+[the last section](#using-this-in-your-own-project); do that once the checks below
+pass.
 
 ---
 
-## Setup A — everything on your laptop
+## Setup A — both on your laptop
+
+Everything on one machine. Nothing here is CAEN-specific.
 
 **1. Install Ollama.** Download it from
 [ollama.com/download](https://ollama.com/download) and run it. On macOS, opening
 the app is enough.
 
-**2. Start the server** (skip this if the macOS app is running):
+**2. Start the server** (skip if the macOS app is already running):
 
 ```bash
 ollama serve &
@@ -67,39 +77,36 @@ ollama serve &
 ollama pull qwen3.5:4b
 ```
 
-**4. Tell aider where the model is.** Copy the template:
+**4. Tell aider where it is:**
 
 ```bash
 cp .env.local .env
 ```
 
 That file is one line, `export OLLAMA_API_BASE=http://127.0.0.1:11434`, which is
-where Ollama puts itself. aider reads `.env` from whatever directory you run it
-in, so this is all it needs. Writing that line by hand does the same thing.
+where Ollama puts itself. aider reads `.env` out of whatever directory you run it
+in, so this is all it needs. Writing the line by hand does the same thing.
 
-**5. Prove it works:**
+**5. Prove it, then work:**
 
 ```bash
 bin/check
-```
-
-Read [what `bin/check` checks](#what-bincheck-checks) if any line is not `ok`.
-
-**6. Run aider:**
-
-```bash
 aider
 ```
 
-**Whether your laptop can hold a useful model is the catch.** A 9B wants about
-16 GB of RAM to be comfortable. If yours cannot, use Setup B or C.
+If any line is not `ok`, see [what `bin/check` checks](#what-bincheck-checks).
+
+**How big a model your laptop can hold is the limit here.** A 9B wants about 16 GB
+of RAM to be comfortable. Setup B is where you go for a bigger one, and it is the
+same commands over again, so do it before you need it.
 
 ---
 
-## Setup B — everything on a CAEN lab machine
+## Setup B — both on a CAEN machine
 
 Sit at the machine and run both halves there. It has an NVIDIA GPU, so the models
 your laptop struggles with are comfortable, and there is no tunnel to go wrong.
+This is Setup A again with one extra step at the front.
 
 **1. Install Ollama without root:**
 
@@ -111,10 +118,9 @@ You are not root on those machines, and `ollama.com/install.sh` writes to
 `/usr/local` and calls `sudo`. `OLLAMA_INSTALL_DIR` does not stop it, because it
 also wants to register a systemd service. This script unpacks the release tarball
 into `~/.local` instead. The tarball has exactly the layout of the prefix the
-official installer wants (`bin/ollama`, `lib/ollama/*`), so that is the same
-install without the root. It stages the download on local disk rather than in
-your home, which matters when home is a network share and would otherwise carry
-1.4 GB twice.
+official installer wants (`bin/ollama`, `lib/ollama/*`), so that is the same install
+without the root. It stages the download on local disk rather than in your home,
+which matters when home is a network share that would otherwise carry 1.4 GB twice.
 
 **2. Survive your own logout.** Once, ever:
 
@@ -122,8 +128,8 @@ your home, which matters when home is a network share and would otherwise carry
 loginctl enable-linger $USER
 ```
 
-Without it, systemd kills `ollama serve` the moment you log out, which looks like
-a crash rather than a logout.
+Without it, systemd kills `ollama serve` the moment you log out, which looks like a
+crash rather than a logout.
 
 **3. Start the server:**
 
@@ -137,52 +143,54 @@ ollama serve &
 ollama pull qwen3.5:9b
 ```
 
-If you pull something other than what `.aider.conf.yml` names, change its
-`model:` line to match, and check that model has a block in
-`.aider.model.settings.yml`. Every model shipped there already does.
+If you pull something other than what `.aider.conf.yml` names, change its `model:`
+line to match, and check that model has a block in `.aider.model.settings.yml`.
+Every model shipped there already does.
 
-**5. Point aider at it.** The model is on the machine you are sitting at, so this
-is the same file as Setup A:
+**5. Point aider at it.** The model is on the machine you are sitting at, so this is
+the same file as Setup A:
 
 ```bash
 cp .env.local .env
 ```
 
-**6. Prove it works, then run aider:**
+**6. Prove it, then work:**
 
 ```bash
 bin/check
 aider
 ```
 
-One more CAEN fact: your home is a network share, so aider itself is slow to
-start from it. Install it to local disk if that bothers you.
+One more CAEN fact: your home is a network share, so aider is slow to start from
+it. Install it to local disk if that bothers you.
 
 ---
 
-## Setup C — aider here, model there
+## Setup C — Ollama on CAEN, aider on your laptop
 
-Your files and your editor stay on your laptop; the GPU work happens on a lab
-machine. The catch is that a CAEN machine can dial out and nothing can dial in,
-so the lab computer pushes its Ollama port onto a third machine both ends can
-reach, and your laptop pulls it back down.
+Your files, your editor and aider stay on your laptop; only the model is elsewhere.
+Setup B already gets you the GPU, so take this one when you want your own machine's
+files and tools against it.
+
+The catch is that a CAEN machine can dial out and nothing can dial in. So the lab
+machine pushes its Ollama port onto a third machine both ends can reach, and your
+laptop pulls it back down:
 
 ```
-lab computer  --ssh -R-->   CAEN node   <--ssh -L--  your laptop
-bin/ollama-relay            (a meeting          bin/ollama-tunnel
-ollama on the GPU            point, runs                aider
-                             nothing)            127.0.0.1:11435
+CAEN lab machine  --ssh -R-->   CAEN node   <--ssh -L--   your laptop
+bin/ollama-relay                (a meeting               bin/ollama-tunnel
+ollama, on the GPU               point; runs                    aider
+                                  nothing)              127.0.0.1:11435
 ```
 
-You need this repo on **both** machines, and Ollama installed on the lab one.
+**You need this repo on both machines.** If you have done Setup B, the lab machine
+already has everything it needs.
 
 ### Once, to set it up
 
-**1. On the lab computer**, install Ollama exactly as in Setup B:
-
-```bash
-bin/install-ollama
-```
+**1. On the CAEN machine**, get Ollama installed and a model pulled, exactly as in
+[Setup B](#setup-b--both-on-a-caen-machine) steps 1 to 4. Skip this if you have
+already done it.
 
 **2. On your laptop**, pick the node and port the two halves will meet on:
 
@@ -192,19 +200,20 @@ bin/ollama-tunnel setup <your-uniqname>
 
 It asks for your password and a Duo push, then writes
 `~/.config/aider-ollama/tunnel.conf` in your CAEN home. That home is mounted on
-every CAEN machine, so the lab computer reads it as a local file and needs no
+every CAEN machine, so the lab machine reads it as a local file and needs no
 configuring of its own.
 
 ### Each session, in this order
 
-**3. On the lab computer**, publish the model:
+**3. On the CAEN machine**, publish the model:
 
 ```bash
 bin/ollama-relay start
 ```
 
-That starts `ollama serve` if it is not up, enables lingering for you, and opens
-the relay. Run `bin/ollama-relay status` if you want to see each hop.
+That starts `ollama serve` if it is not up, enables lingering so it survives your
+logout, and opens the relay. `bin/ollama-relay status` reports every hop
+separately.
 
 **4. On your laptop**, pull it down:
 
@@ -213,7 +222,7 @@ bin/ollama-tunnel start
 ```
 
 The model lands on **`127.0.0.1:11435`**, not 11434, so it cannot collide with an
-Ollama running on your laptop.
+Ollama running on your own machine.
 
 **5. On your laptop**, point aider at that port:
 
@@ -222,38 +231,38 @@ cp .env.caen .env
 ```
 
 One line again, `export OLLAMA_API_BASE=http://127.0.0.1:11435`. Copying
-`.env.local` over it switches back to a model on your own machine.
+`.env.local` over it switches back to a model on your laptop.
 
-**6. Prove it, then run aider:**
+**6. On your laptop**, prove it, then work:
 
 ```bash
 bin/check
 aider
 ```
 
-`bin/check` says whether the answer came over the tunnel or from something
-running locally, which is the failure this port split exists to prevent.
+`bin/check` says whether the answer came over the tunnel or from something running
+locally, which is the failure this port split exists to prevent.
 
-**7. When you are done**, on the lab computer:
+**7. When you are done**, on the CAEN machine:
 
 ```bash
 bin/ollama-relay stop
 ```
 
-Ollama has no authentication. While the relay is up, anyone logged into that
-shared CAEN node can use your GPU and read what you send it.
+Ollama has no authentication. While the relay is up, anyone logged into that shared
+CAEN node can use your GPU and read what you send it.
 
 ### If you also run Ollama on your laptop
 
 Nothing to do. That is why the tunnel is on 11435. Your laptop's Ollama keeps
-11434, the lab computer's arrives on 11435, and which one aider talks to is the
+11434, the lab machine's arrives on 11435, and which one aider talks to is the
 `OLLAMA_API_BASE` line in `.env`. Both can run at once.
 
-They used to share 11434, and that clash was the bad kind: a local Ollama answers
-a probe exactly as the tunnel would, so nothing failed. aider just quietly used
-the laptop's model while you wondered why the lab GPU felt slow.
-`bin/ollama-tunnel` still refuses, and `status` still says which of the two is
-answering, in case something else takes 11435:
+They used to share 11434, and that clash was the bad kind: a local Ollama answers a
+probe exactly as the tunnel would, so nothing failed. aider just quietly used the
+laptop's model while you wondered why the lab GPU felt slow. `bin/ollama-tunnel`
+still refuses, and `status` still says which of the two is answering, in case
+something else takes 11435:
 
 ```
 ollama-tunnel: ollama is already serving 127.0.0.1:11435
@@ -269,8 +278,8 @@ ollama-tunnel: ollama is already serving 127.0.0.1:11435
 them, `caen-vnc-mi01` through `mi18`, handing out a different one per connection.
 Both halves of a bounce have to meet on the *same* host, so two halves that each
 "connect to CAEN" land on different computers and the tunnel is dead on arrival,
-with both ends reporting a healthy connection. Neither script ever dials that
-name for the tunnel; `setup` pins one node by its real name.
+with both ends reporting a healthy connection. Neither script ever dials that name
+for the tunnel; `setup` pins one node by its real name.
 
 **A port on a shared node belongs to whoever got there first.** So your relay port
 on the node is derived from your uniqname, and your two machines compute the same
@@ -301,8 +310,8 @@ does not care.
 
 ## What `bin/check` checks
 
-Run it from the directory you run aider in. Every line is something that ruins a
-session quietly if it is wrong.
+Run it on whichever machine aider is on, from the directory you run aider in. Every line is something
+that ruins a session quietly if it is wrong.
 
 ```
   ok    .aider.conf.yml is here
@@ -322,20 +331,19 @@ Two are worth knowing about before they happen.
 
 **The context window.** A model with no entry in `.aider.model.settings.yml` gets
 2048 tokens, because that is what litellm assumes for a model it has never heard
-of. aider truncates your files to fit and the model starts inventing functions
-that exist three lines further down. It reads as a stupid model rather than a
+of. aider truncates your files to fit and the model starts inventing functions that
+exist three lines further down. It reads as a stupid model rather than a
 misconfiguration, and it is the reason this repo exists. Every model named in that
-file already has a block; if you add one, copy a block and change the name,
-keeping `num_ctx` in step with `max_input_tokens` in
-`.aider.model.metadata.json`.
+file already has a block; if you add one, copy a block and change the name, keeping
+`num_ctx` in step with `max_input_tokens` in `.aider.model.metadata.json`.
 
 **Which machine actually answered.** `bin/check` says whether the model came over
 the tunnel or from something running here, and complains if that does not match
 what `.env` asked for. A local Ollama sitting on the tunnel's port gets caught
 rather than quietly serving you the wrong model.
 
-To change models, edit the `model:` line in `.aider.conf.yml`, then run
-`bin/check` again.
+To change models, edit the `model:` line in `.aider.conf.yml`, then run `bin/check`
+again.
 
 ---
 
@@ -348,9 +356,9 @@ They are read by different programs, and mixing them up costs an afternoon.
 | `OLLAMA_API_BASE` | aider | where to find the model |
 | `OLLAMA_HOST` | the `ollama` command | where its server is, and what `ollama serve` binds to |
 
-aider reads `.env` itself, so `OLLAMA_API_BASE` there is all it needs. The
-`ollama` command does not read `.env` at all. It reads the environment. So to
-point `ollama list` or `ollama pull` at a model arriving over the tunnel:
+aider reads `.env` itself, so `OLLAMA_API_BASE` there is all it needs. The `ollama`
+command does not read `.env` at all. It reads the environment. So to point `ollama
+list` or `ollama pull` at a model arriving over the tunnel:
 
 ```bash
 export OLLAMA_HOST=127.0.0.1:11435
@@ -377,6 +385,7 @@ tunnel. Set it to inspect a remote model, not before starting a local one.
 ## Using this in your own project
 
 Once the checks pass here, move the config to whatever you are actually building.
+This runs on whichever machine aider is on.
 
 **1. Copy the config and the check into your project:**
 
@@ -389,11 +398,11 @@ cp ~/aider-ollama/.env.local ~/aider-ollama/.env.caen .
 cp ~/aider-ollama/bin/check bin/
 ```
 
-**2. Pick an endpoint, the same way as before:**
+**2. Pick where the model is, the same way as before:**
 
 ```bash
-cp .env.local .env     # the model on this machine       127.0.0.1:11434
-cp .env.caen .env      # the model on a lab machine      127.0.0.1:11435
+cp .env.local .env     # Ollama on this laptop            127.0.0.1:11434
+cp .env.caen .env      # Ollama on a CAEN machine         127.0.0.1:11435
 ```
 
 **3. Check it, then work:**
@@ -413,14 +422,16 @@ into yours.
 
 ## Commands
 
-| | |
-|---|---|
-| `bin/check` | prove the setup works, before you waste a session on it |
-| `bin/install-ollama [--prefix DIR]` | install Ollama into your home, no root |
-| `bin/ollama-tunnel setup <user>` | pick the node and port, once, on your laptop |
-| `bin/ollama-tunnel start\|stop\|restart\|status` | the laptop half |
-| `bin/ollama-tunnel node [--next\|<name>]` | show or move the node both halves meet on |
-| `bin/ollama-relay start\|stop\|restart\|status` | the lab-computer half |
+Which machine each one belongs on.
+
+| | runs on | |
+|---|---|---|
+| `bin/check` | wherever aider is | prove the setup works, before you waste a session on it |
+| `bin/install-ollama [--prefix DIR]` | a CAEN machine | install Ollama into your home, no root |
+| `bin/ollama-tunnel setup <user>` | your laptop | pick the node and port, once |
+| `bin/ollama-tunnel start\|stop\|restart\|status` | your laptop | the laptop half of the tunnel |
+| `bin/ollama-tunnel node [--next\|<name>]` | your laptop | show or move the node both halves meet on |
+| `bin/ollama-relay start\|stop\|restart\|status` | a CAEN machine | the lab-machine half |
 
 ## Licence
 
