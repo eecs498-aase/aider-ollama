@@ -134,7 +134,10 @@ bin/install-aider
 ```bash
 bin/install-ollama
 ```
-
+You may need to add Ollama to your path here, run this below. 
+```bash
+export PATH="$HOME/.local/bin:$PATH" 
+```
 You are not root on those machines, and `ollama.com/install.sh` writes to
 `/usr/local` and calls `sudo`. `OLLAMA_INSTALL_DIR` does not stop it, because it
 also wants to register a systemd service. This script unpacks the release tarball
@@ -161,6 +164,7 @@ laptop:
 ollama serve &
 ollama pull qwen3.5:9b
 ```
+
 
 If you pull something other than what `.aider.conf.yml` names, change its `model:`
 line to match, and check that model has a block in `.aider.model.settings.yml`.
