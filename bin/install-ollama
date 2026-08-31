@@ -6,6 +6,12 @@
 #   bin/install-ollama --prefix DIR    somewhere else
 #   bin/install-ollama --force         reinstall over an existing copy
 #
+# Home is the right place for it, even on a CAEN machine where home is a
+# network share: Ollama is a few big files that read at full speed off the
+# share, and the models it pulls go in ~/.ollama, so both follow you to every
+# lab machine. Pull once. (aider is the piece that cannot live there; see
+# bin/install-aider.)
+#
 # The official installer at ollama.com/install.sh is not an option on a machine
 # where you are not root: it writes to /usr/local and calls sudo, and setting
 # OLLAMA_INSTALL_DIR does not stop it, because it also wants to register a
@@ -31,16 +37,44 @@ done
 say() { echo "install-ollama: $*"; }
 die() { echo "install-ollama: $*" >&2; exit 1; }
 
+# $PREFIX/bin has to be on the PATH for `ollama` to mean this one. On the CAEN
+# machines ~/.local/bin normally already is. When it is not, add it to the
+# shell's startup file and say what to do for this terminal.
+ensure_on_path() {
+  local bindir="$PREFIX/bin" line rc found=""
+  case ":$PATH:" in *":$bindir:"*) return 0 ;; esac
+  line="export PATH=\"${bindir/#$HOME\//\$HOME/}:\$PATH\""
+  for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
+    [ -f "$rc" ] || continue
+    found=1
+    grep -qF "$bindir" "$rc" && continue
+    grep -qF "${bindir/#$HOME\//\$HOME/}" "$rc" && continue
+    printf '\n# added by aider-ollama bin/install-ollama\n%s\n' "$line" >> "$rc"
+  done
+  [ -n "$found" ] || printf '# added by aider-ollama bin/install-ollama\n%s\n' "$line" >> "$HOME/.bashrc"
+  echo
+  echo "$bindir was not on your PATH. It is now, for new terminals."
+  echo "For this one, run:  $line"
+}
+
 if [ "$(uname -s)" = "Darwin" ]; then
   say "on macOS, download the app from https://ollama.com/download"
   say "and drag it to ~/Applications - that needs no root either."
   exit 0
 fi
 
-if [ -z "$FORCE" ] && command -v ollama >/dev/null 2>&1; then
-  say "already installed: $(command -v ollama)  $(ollama --version 2>&1 | head -1)"
-  say "use --force to install anyway"
-  exit 0
+if [ -z "$FORCE" ]; then
+  # Check the prefix as well as the PATH, so a copy installed before ~/.local/bin
+  # was on the PATH is found rather than downloaded again.
+  have=""
+  if command -v ollama >/dev/null 2>&1; then have="$(command -v ollama)"
+  elif [ -x "$PREFIX/bin/ollama" ]; then have="$PREFIX/bin/ollama"; fi
+  if [ -n "$have" ]; then
+    say "already installed: $have  $("$have" --version 2>&1 | head -1)"
+    say "use --force to install anyway"
+    ensure_on_path
+    exit 0
+  fi
 fi
 
 case "$(uname -m)" in
@@ -87,9 +121,4 @@ fi
 [ -x "$PREFIX/bin/ollama" ] || die "ollama did not land in $PREFIX/bin"
 say "installed $("$PREFIX/bin/ollama" --version 2>&1 | grep -o 'version is.*' || echo ollama) in $PREFIX"
 
-case ":$PATH:" in
-  *":$PREFIX/bin:"*) ;;
-  *) echo
-     echo "$PREFIX/bin is not on your PATH. Add this to your shell profile:"
-     echo "    export PATH=\"$PREFIX/bin:\$PATH\"" ;;
-esac
+ensure_on_path

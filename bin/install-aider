@@ -1,31 +1,40 @@
 #!/usr/bin/env bash
-# Install aider onto a CAEN machine's local disk, not into your home.
+# Install aider on a CAEN machine, and keep it working there.
 #
-#   bin/install-aider                  into $TMPDIR/aider-$USER
-#   bin/install-aider --prefix DIR     somewhere else
+#   bin/install-aider                  once, from your clone of this repo
 #   bin/install-aider --force          rebuild over an existing copy
+#   bin/install-aider --prefix DIR     build somewhere other than the default
 #
-# Your CAEN home is an NFS share. aider is a Python program that imports several
-# hundred files at startup, and every one of those is a network round trip, so
-# an aider installed in your home takes tens of seconds to get to a prompt and
-# feels broken. The fix is not a faster machine, it is a local disk: the same
-# install, on a filesystem attached to the computer you are sitting at.
+# Your CAEN home is a network share, mounted on every lab machine. That is
+# right for Ollama and for the models it pulls: a few big files that read at
+# full speed and follow you from machine to machine. It is wrong for aider,
+# which is a Python program that opens several hundred small files to start.
+# From a network home every one of those is a round trip, aider takes tens of
+# seconds to reach a prompt, and it feels broken. So this builds aider on the
+# local disk of the machine you are sitting at, where the same install starts
+# in seconds.
 #
-# The cost is that local disk is per-machine and gets cleaned, so you re-run
-# this when you come back to a different machine or after a reboot. It takes
-# under a minute, which is less than one slow aider startup.
+# Local disk belongs to one machine and gets cleaned. So this also leaves a
+# launcher at ~/.local/bin/aider, and the launcher is what runs when you type
+# `aider`: it checks for the local build and, at a machine that does not have
+# one, rebuilds it (about a minute) before starting. There is nothing to
+# remember when you move machines and nothing to re-run.
 #
 # On your own laptop you do not need this. Use the normal installer:
 #   python3 -m pip install aider-install && aider-install
 set -euo pipefail
 
-PREFIX="${TMPDIR:-/tmp}/aider-$USER"
+PREFIX=""
 FORCE=""
+FROM_LAUNCHER=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --prefix) PREFIX="${2:?--prefix needs a directory}"; shift 2 ;;
     --force)  FORCE=1; shift ;;
-    -h|--help) sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    # The launcher rebuilds with this: build only, leave the launcher alone,
+    # skip the summary.
+    --from-launcher) FROM_LAUNCHER=1; shift ;;
+    -h|--help) sed -n '2,6p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "install-aider: unknown argument '$1'" >&2; exit 2 ;;
   esac
 done
@@ -33,9 +42,19 @@ done
 say() { echo "install-aider: $*"; }
 die() { echo "install-aider: $*" >&2; exit 1; }
 
+USER_NAME="${USER:-$(id -un)}"
+# The launcher recomputes the default at run time rather than baking in
+# today's value, because TMPDIR can differ between machines and sessions.
+if [ -n "$PREFIX" ]; then
+  PREFIX_LINE="$(printf '%q' "$PREFIX")"
+else
+  PREFIX="${TMPDIR:-/tmp}/aider-$USER_NAME"
+  PREFIX_LINE='"${TMPDIR:-/tmp}/aider-${USER:-$(id -un)}"'
+fi
+
 # Refuse to do the one thing this script exists to avoid.
 case "$PREFIX" in
-  "$HOME"|"$HOME"/*) die "$PREFIX is inside your home, which is the NFS share
+  "$HOME"|"$HOME"/*) die "$PREFIX is inside your home, which is the network share
   this script exists to stay off. Pass --prefix with a local-disk path." ;;
 esac
 
@@ -55,8 +74,7 @@ pick_python() {
 }
 
 if [ -x "$PREFIX/bin/aider" ] && [ -z "$FORCE" ]; then
-  say "already installed: $PREFIX/bin/aider"
-  say "use --force to rebuild"
+  say "already built on this machine: $PREFIX/bin/aider"
 else
   PY="$(pick_python)" || die "no python3 on this machine"
   say "using $PY ($("$PY" -c 'import sys; print(".".join(map(str,sys.version_info[:3])))'))"
@@ -64,7 +82,7 @@ else
   rm -rf "$PREFIX"
   mkdir -p "$PREFIX"
   "$PY" -m venv "$PREFIX" || die "could not create the virtualenv"
-  # Pip's own cache defaults into ~/.cache, which is the NFS share again.
+  # Pip's own cache defaults into ~/.cache, which is the network share again.
   export PIP_CACHE_DIR="$PREFIX/pip-cache"
   "$PREFIX/bin/pip" install -q --upgrade pip setuptools wheel \
     || die "could not prepare pip"
@@ -74,17 +92,81 @@ else
   the range aider publishes wheels for. Check: $PY --version"
 fi
 
+[ -n "$FROM_LAUNCHER" ] && exit 0
+
+# --- the launcher, and a copy of this script for it to call ------------------
+# Both go in your home, which every lab machine mounts: two small files, which
+# the share serves fine. The copy is so the launcher keeps working after you
+# delete or move this clone.
+LIBEXEC="$HOME/.local/share/aider-ollama"
+INSTALLER="$LIBEXEC/install-aider"
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+mkdir -p "$LIBEXEC" "$HOME/.local/bin"
+if [ "$SELF" != "$INSTALLER" ]; then
+  cp "$SELF" "$INSTALLER"
+  chmod 755 "$INSTALLER"
+fi
+
+LAUNCHER="$HOME/.local/bin/aider"
+if [ -e "$LAUNCHER" ] && ! grep -q 'Written by aider-ollama' "$LAUNCHER" 2>/dev/null; then
+  say "replacing the aider at $LAUNCHER (an install in your home, the slow one) with the launcher"
+fi
+launcher="$(cat <<'LAUNCHER'
+#!/usr/bin/env bash
+# Written by aider-ollama's bin/install-aider. Re-run that rather than editing this.
+#
+# aider lives on this machine's local disk, not in your home: home is a network
+# share and aider cannot start quickly from one. Local disk is per-machine and
+# gets cleaned, so when the build is missing this makes it again (about a
+# minute), then runs it.
+set -euo pipefail
+PREFIX=@PREFIX_LINE@
+INSTALLER="$HOME/.local/share/aider-ollama/install-aider"
+if [ ! -x "$PREFIX/bin/aider" ]; then
+  echo "aider: not built on this machine yet. Building it, about a minute." >&2
+  [ -x "$INSTALLER" ] || {
+    echo "aider: the installer is gone: $INSTALLER" >&2
+    echo "  git clone https://github.com/eecs498-aase/aider-ollama.git && aider-ollama/bin/install-aider" >&2
+    exit 1
+  }
+  "$INSTALLER" --prefix "$PREFIX" --from-launcher >&2
+fi
+exec "$PREFIX/bin/aider" "$@"
+LAUNCHER
+)"
+printf '%s\n' "${launcher//@PREFIX_LINE@/$PREFIX_LINE}" > "$LAUNCHER"
+chmod 755 "$LAUNCHER"
+
+# --- PATH --------------------------------------------------------------------
+# `aider` has to resolve to the launcher, so ~/.local/bin has to be on the PATH.
+# On the CAEN machines it normally already is. When it is not, add it to the
+# shell's startup file and say what to do for this terminal.
+path_note=""
+case ":$PATH:" in
+  *":$HOME/.local/bin:"*) ;;
+  *)
+    line='export PATH="$HOME/.local/bin:$PATH"'
+    found=""
+    for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
+      [ -f "$rc" ] || continue
+      found=1
+      grep -qF '.local/bin' "$rc" && continue
+      printf '\n# added by aider-ollama bin/install-aider\n%s\n' "$line" >> "$rc"
+    done
+    [ -n "$found" ] || printf '# added by aider-ollama bin/install-aider\n%s\n' "$line" >> "$HOME/.bashrc"
+    path_note="  ~/.local/bin was not on your PATH. It is now, for new terminals.
+  For this one, run:  $line
+"
+    ;;
+esac
+
 ver="$("$PREFIX/bin/aider" --version 2>&1 | head -1)"
 cat <<MSG
 
 Installed. $ver
 
-  Put it on your PATH for this session:
+  aider is on this machine's local disk, with a launcher at ~/.local/bin/aider
+  that rebuilds it at any machine that does not have it yet. Type: aider
 
-      export PATH="$PREFIX/bin:\$PATH"
-
-  Then: aider --version
-
-  This lives on the local disk of this machine only. On another CAEN machine,
-  or after a reboot, run this again.
+$path_note
 MSG
