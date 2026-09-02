@@ -14,7 +14,7 @@ aider     reads .env, talks to whatever answers there
 ```
 
 Ollama is the piece that wants a GPU. aider is a small program that sits with your
-files. Where you put each one gives three setups.
+files. Where you put each one gives four setups.
 
 **[Setup A](#setup-a--both-on-your-laptop)** puts both on your laptop. Start here.
 
@@ -27,6 +27,12 @@ at the front.
 laptop and puts only Ollama on the CAEN machine, reached over an SSH tunnel. Your
 own files and editor against the lab GPU. It has the most moving parts, so take it
 when you want it rather than to get started.
+
+**[Setup D](#setup-d--ollama-on-a-great-lakes-gpu-aider-on-your-laptop)** is
+Setup C against a Great Lakes GPU instead of a CAEN one. Much bigger cards, big
+enough for a 27B model, and one script rather than two. What you take on is
+Slurm: the GPU is a job you queue for and are billed for while you hold it. It
+needs a Great Lakes account, which not everyone has.
 
 Do A and B. They are the same commands twice, and between them you have a model on
 whatever machine you are sitting at. Switching is one line in `.env`, so you are
@@ -328,6 +334,176 @@ does not care.
 
 ---
 
+## Setup D — Ollama on a Great Lakes GPU, aider on your laptop
+
+Setup C's idea against a much bigger GPU, with one script instead of two.
+
+Great Lakes is the university's HPC cluster, and its GPUs are the ones a lab
+machine is not: A40s with 48GB, Blackwells with 96GB. Those hold a 27B model,
+which no laptop and no CAEN machine will. What you give up is that you do not
+simply use one. You ask Slurm for it, you wait, and you are billed for every
+minute you hold it whether you are prompting or not.
+
+**You need a Great Lakes account with an allocation to bill.** Ask for one at
+[arc.umich.edu/login-request](https://arc.umich.edu/login-request/). A course
+account is the usual way in, and it caps you at one GPU and a walltime your
+instructor sets.
+
+```
+your laptop                    a login node          your Slurm job
+aider         --ssh -L -J-->   (just a doorway) -->  ollama on the GPU
+127.0.0.1:11435
+```
+
+**One script, and it runs on your laptop.** Setup C needs a half on each machine
+because nothing can SSH into a CAEN lab computer, so the lab half has to dial
+out and push its port somewhere you can both reach. Great Lakes does not have
+that problem: a login node can open a connection to a compute node you hold a
+job on, so one `ssh -J` from here lands on the GPU. No relay port on a shared
+node, no config file in a remote home, no two halves to start in the right
+order.
+
+### Once
+
+**1. Set it up:**
+
+```bash
+bin/greatlakes setup <your-uniqname>
+```
+
+Password, then a Duo push. It pins a login node, finds the account your jobs
+bill to, and installs a current Ollama into your Great Lakes home.
+
+That last step matters more than it sounds. Great Lakes ships Ollama as a
+module, and the module is whatever version ARC last packaged. A model newer than
+it cannot be pulled at all: the registry answers *requires a newer version of
+Ollama* and the pull fails, which reads like a broken model rather than an old
+client. `bin/install-ollama` puts a current one in `~/.local` without root, and
+every job prefers it.
+
+**2. Pick a model worth the GPU, and pull it.** Edit the `model:` line in
+`.aider.conf.yml`:
+
+```yaml
+model: ollama_chat/qwen3.8:27b-q4_K_M
+```
+
+```bash
+bin/greatlakes pull
+```
+
+The pull runs on the login node, not on a GPU, so the download costs you
+nothing. Models land in `~/.ollama`, which every compute node mounts, so this is
+once per model rather than once per job. Watch your home quota: 80GB is the
+default, and two quantisations of one 27B is most of it.
+
+### Each session
+
+```bash
+bin/greatlakes start          # take a GPU, serve the model, tunnel it here
+cp .env.greatlakes .env       # one line: the 11435 endpoint
+bin/check
+aider
+```
+
+`start` submits a job if you do not have one and reattaches if you do, then
+waits two minutes for a card. If none comes free it prints when Slurm expects to
+start yours and exits; run it again later and it picks up the same job.
+
+**When you are done, give the GPU back:**
+
+```bash
+bin/greatlakes stop
+```
+
+That cancels the job. Closing the tunnel while leaving the job running bills
+your allocation for a GPU nobody is prompting, and on a course account those
+hours are shared with everyone else on it.
+
+### Which GPU to ask for
+
+`GL_PARTITION` in `~/.config/aider-ollama/greatlakes.conf` is a list, and Slurm
+takes the first one with a free card, so listing several is the difference
+between working now and queueing behind one popular partition.
+
+| partition | GPU | VRAM | holds a 27B |
+|---|---|---|---|
+| `spgpu` | A40 | 48GB | q8 (29GB) or q4 (18GB) |
+| `gpu-rtx6000` | RTX PRO 6000 Blackwell | 96GB | anything, and fastest |
+| `gpu_mig40` | A100 80GB, MIG 3g.40gb slice | 40GB | q4 comfortably, q8 tightly |
+| `gpu` | Tesla V100 | 16GB | no; models up to about 12GB |
+
+**The model has to fit the card.** Ollama will run one that does not by keeping
+part of it in host memory, and it does not warn you: it simply generates several
+times slower, which reads as a slow GPU rather than the wrong one.
+
+**Neither the queue depth nor Slurm's own estimate predicts your wait.** What
+does is how many GPUs are free right now:
+
+```bash
+bin/greatlakes gpus
+```
+
+```
+  PARTITION       GPU                            FREE
+  gpu             v100                             1 of  52
+  gpu_mig40       nvidia_a100_80gb_pcie_3g.40gb    0 of  16
+  gpu-rtx6000     rtx_pro_6000_blackwell           6 of  96
+  spgpu           a40                             20 of 240
+```
+
+While writing this, `spgpu` had 681 jobs queued and `sbatch --test-only` said a
+new one would start in six days. It had 22 free A40s, and the job started
+immediately. The estimate is the worst-case reservation plan and ignores
+backfill entirely.
+
+### What it feels like
+
+Measured from a laptop through the tunnel, so the numbers include it.
+
+| model | GPU | first token | generate | prefill |
+|---|---|---|---|---|
+| qwen3.5:4b | V100 16GB | 0.5s | 93 tok/s | 1,150 tok/s |
+| qwen3.8:27b-q8_0 | A40 48GB | 1.2s | 13 tok/s | 1,220 tok/s |
+| qwen3.8:27b-q4_K_M | A40 48GB | 1.2s | 17 tok/s | 1,190 tok/s |
+
+The tunnel costs about 60ms per round trip, which is not what you feel.
+
+What you feel is that generation is memory bandwidth. Every token reads the
+whole model, so 29GB of weights on a card with 696GB/s cannot beat about 24
+tokens a second however idle that card is, and a 4B model on a much older one
+beats a 27B by seven times. Dropping from q8 to q4 cuts the weights from 29GB
+to 18GB and bought 1.3x, not the 1.6x that ratio suggests, because q4_K_M
+spends some of what it saves unpacking each weight.
+
+Prefill barely differs between them, because reading a prompt is arithmetic
+rather than memory traffic. It is also the part you actually wait on: 15,000
+tokens of repo map at 1,190 tokens a second is **14 seconds before the first
+token** of every turn that changes the context, which dwarfs the second or two
+the table shows for a short prompt.
+
+### Three things that make this harder than it looks
+
+**Great Lakes login nodes refuse your key.** A key in `~/.ssh/authorized_keys`
+there is ignored and every new session wants a password and a Duo push. If you
+have `ControlMaster` in your `~/.ssh/config`, as this script assumes, an earlier
+connection keeps working and hides this completely, right up until it expires
+and everything wants a password at once. `bin/greatlakes` opens one connection,
+holds it for eight hours, and rides it for everything after. The *compute* node
+is the exception: it does take your key, so the second hop costs no push.
+
+**`greatlakes.arc-ts.umich.edu` is a round-robin over six login nodes.** Not the
+same trap as CAEN, since nothing has to meet on a particular one, but every new
+node is a new Duo push and nothing to reuse. `setup` pins one.
+
+**Ollama unloads the model after five minutes idle.** Read a diff, think, come
+back, and your next prompt pays a full reload before its first token: half a
+minute for a 29GB model off the cluster's home filesystem. The job sets
+`OLLAMA_KEEP_ALIVE=-1` so the weights stay resident for its whole walltime.
+`bin/greatlakes status` shows which model is actually loaded, not merely pulled.
+
+---
+
 ## What `bin/check` checks
 
 Run it on whichever machine aider is on, from the directory you run aider in. Every line is something
@@ -453,6 +629,9 @@ Which machine each one belongs on.
 | `bin/ollama-tunnel start\|stop\|restart\|status` | your laptop | the laptop half of the tunnel |
 | `bin/ollama-tunnel node [--next\|<name>]` | your laptop | show or move the node both halves meet on |
 | `bin/ollama-relay start\|stop\|restart\|status` | a CAEN machine | the lab-machine half |
+| `bin/greatlakes setup <uniqname>` | your laptop | pin a login node, find your account, install Ollama there |
+| `bin/greatlakes pull [model]` | your laptop | download a model on the cluster, off the clock |
+| `bin/greatlakes start\|stop\|restart\|status` | your laptop | take a Great Lakes GPU, tunnel it here, give it back |
 
 ## Licence
 

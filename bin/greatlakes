@@ -1,0 +1,546 @@
+#!/usr/bin/env bash
+# RUN THIS ON YOUR LAPTOP. Nothing lives on Great Lakes but a batch job.
+#
+#   bin/greatlakes setup <uniqname>  once: check your key, install Ollama there
+#   bin/greatlakes pull [model]      download a model there, off the clock
+#   bin/greatlakes start             take a GPU, serve the model, tunnel it here
+#   bin/greatlakes stop              close the tunnel and give the GPU back
+#   bin/greatlakes restart           stop, then start
+#   bin/greatlakes status            job, GPU, tunnel and model, separately
+#   bin/greatlakes gpus              free cards per partition, which is the
+#                                    only number that predicts your queue wait
+#
+#   your laptop                    a login node           your Slurm job
+#   aider         --ssh -L -J-->   (just a doorway)  -->  ollama on the GPU
+#   127.0.0.1:11435
+#
+# Setup C needs a script on each machine because nothing can SSH *into* a CAEN
+# lab computer: the lab half has to dial out and push its port onto a third
+# machine that both ends can reach. Great Lakes does not have that problem. A
+# login node can open a connection to a compute node you hold a job on, so one
+# `ssh -J` from here reaches the GPU.
+#
+# That removes four things Setup C has to get right: the relay port on a shared
+# node, the config file in a remote home, the two halves that must be started
+# in order, and the rule that both halves meet on the same login node. Nothing
+# meets on the login node here; it only has to let you through.
+#
+# The login node is still pinned rather than dialled by the round-robin name,
+# for a reason CAEN shares. Great Lakes login nodes refuse publickey: a key in
+# ~/.ssh/authorized_keys there is ignored, and every new session wants your
+# password and a Duo push. So the connection is authenticated once and held,
+# and everything after rides it. `greatlakes.arc-ts.umich.edu` hands out a
+# different node per connection, which would mean a new Duo push each time and
+# nothing to reuse. One node, one push, one held connection.
+#
+# The *compute* node is the exception: it does take your key. So the second hop
+# needs nothing held, and the ProxyJump costs no push of its own.
+#
+# What replaces them is Slurm. The GPU is a job, the job has a walltime, and
+# you are billed for holding it whether you prompt or not. That is why `stop`
+# cancels the job rather than just closing the tunnel.
+set -euo pipefail
+
+case "$(uname -s)" in
+  Linux) case "$(hostname -f 2>/dev/null || hostname)" in
+           gl*.arc-ts.umich.edu|*.engin.umich.edu)
+             echo "greatlakes: this script runs on your laptop, not here." >&2
+             exit 1 ;;
+         esac ;;
+esac
+
+bold=$'\033[1m'; dim=$'\033[2m'; green=$'\033[32m'; red=$'\033[31m'; yellow=$'\033[33m'; off=$'\033[0m'
+[ -t 1 ] || { bold=""; dim=""; green=""; red=""; yellow=""; off=""; }
+die() { echo "greatlakes: $1" >&2; exit 1; }
+say() { echo "greatlakes: $*"; }
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CONF="${XDG_CONFIG_HOME:-$HOME/.config}/aider-ollama/greatlakes.conf"
+
+# 11435, not 11434, for the same reason as Setup C: an Ollama on your own
+# laptop keeps 11434, and if the two shared a port nothing would fail loudly -
+# a local Ollama answers a probe exactly as this tunnel would, and aider would
+# quietly use your laptop's model while you wondered why the cluster felt slow.
+PORT="${OLLAMA_TUNNEL_PORT:-11435}"
+
+# The job carries this name so a later `start` can find the one you already
+# have instead of queueing for a second GPU behind your own first one.
+JOB_NAME="aider-ollama"
+
+# ------------------------------------------------------------------ the model
+#
+# Read from .aider.conf.yml, so the model is named in exactly one place and
+# `bin/check` and this script cannot disagree about which one you meant. Run
+# from your own project and it reads the copy there.
+model_from_conf() {
+  local f
+  for f in "./.aider.conf.yml" "$HERE/.aider.conf.yml"; do
+    [ -f "$f" ] || continue
+    sed -n 's/^model: *ollama_chat\///p' "$f" | head -1
+    return 0
+  done
+}
+
+# ------------------------------------------------------------------ ssh glue
+#
+# Great Lakes takes your key, unlike CAEN, so none of this needs a password and
+# none of it needs to be held open for hours to avoid a second Duo push. The
+# multiplexed connection is here because `status` makes several calls in a row
+# and a fresh handshake for each is a visible pause, not because anything would
+# break without it.
+# Same ControlPath spelling as bin/ollama-tunnel, and the one most people
+# already have in ~/.ssh/config, so a connection you opened by hand is one this
+# script can use rather than a second Duo push for the same node.
+MUX=(-o ControlMaster=auto -o "ControlPath=$HOME/.ssh/cm-%r@%h:%p" -o ControlPersist=8h
+     -o ServerAliveInterval=60 -o ServerAliveCountMax=60 -o TCPKeepAlive=yes)
+
+master_up() { ssh "${MUX[@]}" -O check "$LOGIN_TARGET" >/dev/null 2>&1; }
+
+# The one interactive moment in the whole setup. Everything else in this script
+# is a no-op if this connection is up, so it is worth paying once and holding.
+ensure_master() {
+  master_up && return 0
+  mkdir -p "$HOME/.ssh"; chmod 700 "$HOME/.ssh"
+  echo "greatlakes: connecting to $GL_LOGIN ${dim}(password, then Duo)${off}"
+  ssh "${MUX[@]}" -f -N "$LOGIN_TARGET" || die "could not connect to $GL_LOGIN"
+}
+
+load_conf() {
+  [ -f "$CONF" ] || die "not set up yet. Run:  bin/greatlakes setup <your-uniqname>"
+  # shellcheck disable=SC1090
+  . "$CONF"
+  LOGIN_TARGET="$GL_USER@$GL_LOGIN"
+}
+
+# Every call to the login node goes through here.
+gl() {
+  ensure_master
+  ssh "${MUX[@]}" -o BatchMode=yes -o ConnectTimeout=15 "$LOGIN_TARGET" "$@"
+}
+
+# And every call to the compute node, through the login node as a doorway.
+# BatchMode so a key that has stopped working fails in one second with a clear
+# message rather than sitting on a password prompt that nothing will answer.
+node_ssh() {
+  local n="$1"; shift
+  ensure_master
+  ssh -o BatchMode=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=accept-new \
+      -o "ProxyCommand=ssh $(printf '%s ' "${MUX[@]}" | sed 's/%/%%/g') -W %h:%p $LOGIN_TARGET" \
+      "$GL_USER@$n" "$@"
+}
+
+# ------------------------------------------------------------------ the job
+#
+# Fields are tab-separated because a node list never contains a tab and
+# sometimes contains everything else.
+# Only states that can still become a GPU. A job you just cancelled sits in
+# COMPLETING for a few seconds, and picking it up there is how `restart` finds
+# "an existing job", waits for it, and then reports that it vanished.
+job_line() { gl "squeue -h -u \$USER -n $JOB_NAME -t PENDING,RUNNING,CONFIGURING -o '%i|%T|%N|%M|%L' 2>/dev/null | head -1"; }
+job_id()    { printf '%s' "$1" | cut -d'|' -f1; }
+job_state() { printf '%s' "$1" | cut -d'|' -f2; }
+job_node()  { printf '%s' "$1" | cut -d'|' -f3; }
+job_used()  { printf '%s' "$1" | cut -d'|' -f4; }
+job_left()  { printf '%s' "$1" | cut -d'|' -f5; }
+
+# The batch script is written fresh on every start rather than kept on the
+# cluster, so there is one copy of it, here, and no way to be running a stale
+# one you edited months ago and forgot.
+write_job() {
+  local model="$1"
+  gl "cat > ~/.aider-ollama.sbatch" <<EOF
+#!/bin/bash
+#SBATCH --job-name=$JOB_NAME
+#SBATCH --account=$GL_ACCOUNT
+#SBATCH --partition=$GL_PARTITION
+#SBATCH --gres=gpu:$GL_GPUS
+#SBATCH --cpus-per-task=$GL_CPUS
+#SBATCH --mem=$GL_MEM
+#SBATCH --time=$GL_TIME
+#SBATCH --output=%x-%j.log
+
+# Prefer the copy in your home over the module. The module is whatever version
+# ARC last packaged, and a model released after it cannot be pulled at all:
+# the registry answers "requires a newer version of Ollama" and the pull fails.
+# bin/install-ollama puts a current one in ~/.local without root.
+export PATH=\$HOME/.local/bin:\$PATH
+command -v ollama >/dev/null 2>&1 || module load ollama
+
+export OLLAMA_HOST=127.0.0.1:$PORT
+
+# Without this the model is evicted after five minutes idle, and the next
+# prompt after you read a diff or go to lunch pays a full reload before its
+# first token. On a 29GB model off a network filesystem that is not a pause
+# you will sit through twice. -1 keeps it resident for the life of the job.
+export OLLAMA_KEEP_ALIVE=-1
+
+ollama serve > \$HOME/.aider-ollama-serve.log 2>&1 &
+for i in \$(seq 120); do
+  curl -sf -m 2 http://127.0.0.1:$PORT/api/tags >/dev/null 2>&1 && break
+  sleep 1
+done
+
+# Load the weights now, while you are still walking to your desk, rather than
+# on your first prompt.
+curl -sf -m 900 http://127.0.0.1:$PORT/api/generate \
+  -d '{"model":"$model","prompt":"","keep_alive":-1}' >/dev/null 2>&1
+
+echo "ready: $model on \$(hostname -f)"
+
+# Hold the allocation. Slurm ends the job at the walltime; bin/greatlakes stop
+# ends it sooner, which is the whole point of not leaving this running.
+sleep infinity
+EOF
+  gl "chmod +x ~/.aider-ollama.sbatch"
+}
+
+# ------------------------------------------------------------------ the tunnel
+#
+# Both address families, spelled out. Bound to only one of them, curl finds the
+# tunnel and aider does not: curl tries every address a name resolves to, and
+# litellm resolves 127.0.0.1 and never falls back. That asymmetry reads as
+# "curl works, aider says connection refused" and sends you looking in the
+# wrong place entirely.
+forwards() { echo "127.0.0.1:$PORT:127.0.0.1:$PORT" "[::1]:$PORT:127.0.0.1:$PORT"; }
+
+tunnel_pid()  { lsof -nP -iTCP:"$PORT" -sTCP:LISTEN -t 2>/dev/null | head -1; }
+# An ssh that is also a multiplexing master presents as
+# "ssh: /path/to/cm-user@host:22 [mux]", so match ssh before stripping the
+# path, or the tunnel reads as an unknown local program holding the port.
+holder() {
+  local p raw; p="$(tunnel_pid)"; [ -n "$p" ] || return 0
+  raw="$(ps -o comm= -p "$p" 2>/dev/null)"
+  case "$raw" in
+    ssh|ssh:*|*/ssh) echo ssh ;;
+    *)               printf '%s' "$raw" | sed 's|.*/||' ;;
+  esac
+}
+answers()     { curl -sf -m 5 "http://127.0.0.1:$PORT/api/tags" >/dev/null 2>&1; }
+
+open_tunnel() {
+  local node="$1" args=()
+  for f in $(forwards); do args+=(-L "$f"); done
+  ssh -o BatchMode=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=accept-new \
+      -o ExitOnForwardFailure=yes -o ServerAliveInterval=60 -o ServerAliveCountMax=60 \
+      -f -N "${args[@]}" -J "$LOGIN_TARGET" "$GL_USER@$node" 2>&1 | grep -v '^\*\*' || true
+}
+
+close_tunnel() {
+  local p; p="$(tunnel_pid)"
+  [ -n "$p" ] || return 0
+  case "$(holder)" in
+    ssh) kill "$p" 2>/dev/null || true ;;
+    *)   return 0 ;;   # not ours; leave whatever it is alone
+  esac
+}
+
+say_env() {
+  echo
+  echo "  Point aider at it, from the project you run aider in:"
+  echo
+  echo "      cp ${HERE/#$HOME/~}/.env.greatlakes .env"
+  echo "      bin/check"
+  echo
+}
+
+# ------------------------------------------------------------------ commands
+
+cmd_setup() {
+  local uniq="${1:-}"
+  if [ -z "$uniq" ] && [ -f "$CONF" ]; then . "$CONF"; uniq="$GL_USER"; fi
+  [ -n "$uniq" ] || die "usage: bin/greatlakes setup <your-uniqname>"
+
+  GL_USER="$uniq"
+
+  # Any login node will do, since nothing meets on it. Pinning one is what
+  # makes the held connection reusable across every later command.
+  GL_LOGIN="${GL_LOGIN:-gl-login5.arc-ts.umich.edu}"
+  LOGIN_TARGET="$GL_USER@$GL_LOGIN"
+  ensure_master
+  gl true >/dev/null 2>&1 || die "connected to $GL_LOGIN but cannot run a command there.
+  If you have no account yet:  https://arc.umich.edu/login-request/"
+
+  # An account is what a job is billed to, and you cannot submit without one.
+  # Most people have exactly one; a course account and a research account is
+  # the common way to have two, and they bill different budgets, so guessing
+  # between them is not ours to do.
+  local accounts n
+  accounts="$(gl "sacctmgr -nP show assoc user=\$USER format=Account" | sort -u | grep -v '^$')"
+  n="$(printf '%s\n' "$accounts" | grep -c .)"
+  if [ -n "${GL_ACCOUNT:-}" ]; then
+    :
+  elif [ "$n" = 1 ]; then
+    GL_ACCOUNT="$accounts"
+  else
+    echo "greatlakes: you can bill a job to more than one account:" >&2
+    printf '  %s\n' $accounts >&2
+    echo "  Pick one:  GL_ACCOUNT=<name> bin/greatlakes setup $uniq" >&2
+    exit 1
+  fi
+
+  # Walltime and one GPU per job are set per account by ARC, and a class
+  # account is usually capped well below the 14 days a partition allows. Ask
+  # rather than assume, and clamp the default to what you are allowed.
+  local maxwall
+  maxwall="$(gl "sacctmgr -nP show assoc user=\$USER account=$GL_ACCOUNT format=MaxWall" | head -1)"
+  GL_TIME="${GL_TIME:-04:00:00}"
+  if [ -n "$maxwall" ] && [ "$maxwall" != "" ]; then
+    # Compare as seconds so 08:00:00 and 4-00:00:00 sort correctly.
+    to_sec() { awk -F'[-:]' '{ if (NF==4) print (($1*24+$2)*60+$3)*60+$4; else if (NF==3) print ($1*60+$2)*60+$3; else print 0 }' <<<"$1"; }
+    if [ "$(to_sec "$GL_TIME")" -gt "$(to_sec "$maxwall")" ]; then
+      say "your account caps a job at $maxwall; using that"
+      GL_TIME="$maxwall"
+    fi
+  fi
+
+  mkdir -p "$(dirname "$CONF")"
+  cat > "$CONF" <<EOF
+GL_USER=$GL_USER
+# Pinned, not greatlakes.arc-ts.umich.edu. That name hands out a different node
+# per connection, and since every new connection costs a Duo push, a pinned one
+# is the difference between one push a session and one push a command.
+GL_LOGIN=$GL_LOGIN
+GL_ACCOUNT=$GL_ACCOUNT
+# Slurm takes the first of these that has a free GPU, so listing several is
+# the difference between working now and queueing behind one popular card.
+# All three hold a 27B at q8. Add gpu (V100 16GB) for models under about 12GB.
+GL_PARTITION=${GL_PARTITION:-spgpu,gpu-rtx6000,gpu_mig40}
+GL_TIME=$GL_TIME
+GL_GPUS=${GL_GPUS:-1}
+GL_CPUS=${GL_CPUS:-4}
+GL_MEM=${GL_MEM:-32G}
+EOF
+
+  # The module version is frozen at whatever ARC last packaged, and a model
+  # newer than it cannot be pulled at all. This is one download into your home
+  # and it is what every job then uses.
+  if gl "test -x ~/.local/bin/ollama" 2>/dev/null; then
+    say "Ollama in your Great Lakes home: $(gl '~/.local/bin/ollama --version 2>&1' | head -1)"
+  else
+    say "installing a current Ollama into your Great Lakes home ${dim}(~1.4GB)${off}"
+    scp -q -o BatchMode=yes "$HERE/bin/install-ollama" "$LOGIN_TARGET:~/.install-ollama" \
+      || die "could not copy bin/install-ollama over"
+    gl "chmod +x ~/.install-ollama && ~/.install-ollama" || die "the install failed"
+  fi
+
+  cat <<EOF
+
+${bold}Set up.${off}
+
+  account     $GL_ACCOUNT
+  partitions  ${GL_PARTITION:-spgpu,gpu-rtx6000,gpu_mig40}
+  walltime    $GL_TIME per job
+
+Next:  bin/greatlakes pull     ${dim}# once per model${off}
+       bin/greatlakes start
+EOF
+}
+
+cmd_pull() {
+  local model="${1:-$(model_from_conf)}"
+  [ -n "$model" ] || die "no model. Name one, or put it in .aider.conf.yml"
+
+  # On the login node on purpose. A pull inside the job downloads at the same
+  # speed and bills you for a GPU to do it, and a 29GB model is several minutes
+  # of that. Models land in ~/.ollama, which every compute node mounts, so this
+  # is once per model rather than once per job.
+  say "pulling $model on the login node ${dim}(not on a GPU, so it costs nothing)${off}"
+  gl "export PATH=\$HOME/.local/bin:\$PATH OLLAMA_HOST=127.0.0.1:11599
+      curl -sf -m 2 http://127.0.0.1:11599/api/tags >/dev/null 2>&1 ||
+        { nohup ollama serve >~/.aider-ollama-pull.log 2>&1 & sleep 3; }
+      ollama pull '$model'" || die "the pull failed - see the message above"
+  say "${green}pulled${off} $model"
+  gl "export PATH=\$HOME/.local/bin:\$PATH OLLAMA_HOST=127.0.0.1:11599; ollama list" | sed 's/^/  /'
+}
+
+cmd_start() {
+  local model line id state node
+  model="$(model_from_conf)"
+  [ -n "$model" ] || die "no model: line in .aider.conf.yml"
+
+  if answers; then
+    case "$(holder)" in
+      ssh) say "${green}already up${off}. The cluster's model is at http://127.0.0.1:$PORT"
+           say_env; return 0 ;;
+      *)   echo "greatlakes: ${yellow}$(holder) is already serving 127.0.0.1:$PORT${off}" >&2
+           echo "  That is not the tunnel. Stop it first, or it will shadow the model" >&2
+           echo "  on the cluster and aider will quietly use the wrong one." >&2
+           return 1 ;;
+    esac
+  fi
+
+  line="$(job_line)"
+  if [ -z "$line" ]; then
+    write_job "$model"
+    id="$(gl "sbatch --parsable ~/.aider-ollama.sbatch")" || die "sbatch refused the job"
+    say "submitted job ${bold}$id${off} ${dim}($GL_GPUS GPU, $GL_TIME, $GL_PARTITION)${off}"
+  else
+    id="$(job_id "$line")"
+    say "you already have job ${bold}$id${off} ${dim}($(job_state "$line"))${off}"
+  fi
+
+  # Wait, but not forever. A GPU on a busy partition can be hours away, and a
+  # script that sits there looks broken. Two minutes covers the common case of
+  # a card being free right now; past that, say when Slurm expects to start it
+  # and let the person come back. Re-running finds this same job.
+  local waited=0
+  while [ "$waited" -lt 120 ]; do
+    line="$(job_line)"
+    state="$(job_state "$line")"
+    node="$(job_node "$line")"
+    [ "$state" = "RUNNING" ] && [ -n "$node" ] && break
+    if [ -z "$line" ]; then
+      gl "sacct -n -X -j $id -o State,ExitCode" | sed 's/^/  /' >&2
+      die "job $id is gone. The log is ~/$JOB_NAME-$id.log on the cluster."
+    fi
+    sleep 5
+    waited=$((waited + 5))
+  done
+
+  if [ "$state" != "RUNNING" ]; then
+    local est
+    est="$(gl "squeue -h -j $id --start -o '%S'" 2>/dev/null || true)"
+    say "${yellow}still queued${off} ${dim}(Slurm expects ${est:-no estimate yet})${off}"
+    echo "  Nothing is wasted; the job is waiting for a card." >&2
+    echo "  Run ${bold}bin/greatlakes start${off} again later and it will pick this job up." >&2
+    return 0
+  fi
+
+  say "running on ${bold}$node${off}, $(job_left "$line") left"
+
+  # The job is running before Ollama inside it is, and the model still has to
+  # load. Wait on the thing that actually matters rather than on the job state.
+  local i
+  for i in $(seq 60); do
+    node_ssh "$node" "curl -sf -m 3 http://127.0.0.1:$PORT/api/tags >/dev/null" 2>/dev/null && break
+    sleep 2
+  done
+  node_ssh "$node" "curl -sf -m 3 http://127.0.0.1:$PORT/api/tags >/dev/null" 2>/dev/null \
+    || die "the job is running but Ollama is not answering on $node.
+  Look at ~/$JOB_NAME-$id.log and ~/.aider-ollama-serve.log on the cluster."
+
+  open_tunnel "$node"
+  sleep 1
+  if answers; then
+    # What is on the GPU, not what the config asked for. They differ whenever
+    # you change the model: line without restarting the job, and the difference
+    # is a full model load charged to your first prompt rather than to the job
+    # that could have paid it while you walked to your desk.
+    local loaded
+    loaded="$(curl -sf -m 5 "http://127.0.0.1:$PORT/api/ps" \
+      | tr ',{}' '\n\n\n' | sed -n 's/.*"name": *"\([^"]*\)".*/\1/p' | head -1)"
+    say "${green}up${off}. $node, at http://127.0.0.1:$PORT"
+    if [ -n "$loaded" ] && [ "$loaded" != "$model" ]; then
+      say "${yellow}$loaded is loaded, but .aider.conf.yml asks for $model${off}"
+      echo "  Your first prompt will wait for $model to load." >&2
+      echo "  bin/greatlakes restart loads it up front instead." >&2
+    else
+      say "serving ${bold}${loaded:-$model}${off}"
+    fi
+    say_env
+  else
+    die "the forward opened but nothing answered on $PORT. Try: bin/greatlakes restart"
+  fi
+}
+
+# Neither the queue depth nor `sbatch --test-only` predicts how long you wait.
+# A partition with 681 jobs queued and a six-day estimate started a job of mine
+# immediately, because 22 of its cards were free and Slurm backfilled into one.
+# The count of free GPUs is the number that tells you anything, and nothing
+# reports it directly: it is configured minus allocated, per node, summed.
+cmd_gpus() {
+  printf '  %-15s %-30s %s\n' PARTITION GPU FREE
+  gl "scontrol show node -o" | awk '
+    {
+      part=""; gres=""; cfg=0; alloc=0; st="";
+      for (i = 1; i <= NF; i++) {
+        if ($i ~ /^Partitions=/) { sub(/^Partitions=/, "", $i); part = $i }
+        if ($i ~ /^Gres=/)       { sub(/^Gres=/, "", $i);       gres = $i }
+        if ($i ~ /^State=/)      { sub(/^State=/, "", $i);      st   = $i }
+        if ($i ~ /^CfgTRES=/   && match($i, /gres\/gpu=[0-9]+/)) cfg   = substr($i, RSTART+9, RLENGTH-9)
+        if ($i ~ /^AllocTRES=/ && match($i, /gres\/gpu=[0-9]+/)) alloc = substr($i, RSTART+9, RLENGTH-9)
+      }
+      # A drained or down node is configured but cannot run anything, and
+      # counting its cards as free is how you wait forever for a partition
+      # that looks half empty.
+      if (cfg > 0 && st !~ /DOWN|DRAIN|MAINT|INVAL|NOT_RESPONDING/) {
+        split(part, ps, ","); split(gres, g, ":")
+        k = ps[1] "|" g[2]
+        free[k] += cfg - alloc; tot[k] += cfg
+      }
+    }
+    END {
+      for (k in tot) { split(k, a, "|"); printf "  %-15s %-30s %3d of %3d\n", a[1], a[2], free[k], tot[k] }
+    }' | sort
+}
+
+cmd_stop() {
+  local keep="" line id
+  if [ "${1:-}" = "--keep-job" ]; then keep=1; fi
+  close_tunnel
+  line="$(job_line 2>/dev/null || true)"
+  id="$(job_id "$line")"
+  if [ -n "$id" ] && [ -z "$keep" ]; then
+    gl "scancel $id" && say "cancelled job $id. ${dim}The GPU is back in the pool.${off}"
+  elif [ -n "$id" ]; then
+    say "tunnel down. Job $id left running, still billing. ${dim}bin/greatlakes stop to end it.${off}"
+  else
+    say "down."
+  fi
+}
+
+cmd_status() {
+  local line state node id
+  line="$(job_line 2>/dev/null || true)"
+  if [ -z "$line" ]; then
+    echo "Job:          ${red}none${off} ${dim}(bin/greatlakes start)${off}"
+  else
+    id="$(job_id "$line")"; state="$(job_state "$line")"; node="$(job_node "$line")"
+    if [ "$state" = "RUNNING" ]; then
+      echo "Job:          ${green}$state${off} $id on $node"
+      echo "Walltime:     $(job_used "$line") used, ${bold}$(job_left "$line")${off} left ${dim}(billing while held)${off}"
+      echo "GPU:          $(node_ssh "$node" 'nvidia-smi --query-gpu=name,memory.used,memory.total --format=csv,noheader' 2>/dev/null | paste -sd', ' - || echo unknown)"
+    else
+      echo "Job:          ${yellow}$state${off} $id ${dim}($(gl "squeue -h -j $id --start -o '%S'" 2>/dev/null || echo 'no estimate'))${off}"
+    fi
+  fi
+
+  if answers; then
+    case "$(holder)" in
+      ssh) echo "Tunnel:       ${green}up${off} - 127.0.0.1:$PORT reaches the cluster" ;;
+      *)   echo "Tunnel:       ${yellow}$(holder) is answering on $PORT, not the tunnel${off}"
+           echo "              ${dim}aider will use that, not the cluster${off}" ;;
+    esac
+    # /api/ps, not /api/tags. Tags lists everything you have ever pulled, which
+    # tells you nothing about what is on the GPU right now - and on a card that
+    # can hold one 27B at a time, that is the only part you want to know.
+    local loaded
+    loaded="$(curl -sf -m 5 "http://127.0.0.1:$PORT/api/ps" \
+      | tr ',{}' '\n\n\n' | sed -n 's/.*"name": *"\([^"]*\)".*/\1/p' | head -1)"
+    if [ -n "$loaded" ]; then
+      echo "Loaded:       ${green}$loaded${off} ${dim}(resident, no reload on your next prompt)${off}"
+    else
+      echo "Loaded:       ${yellow}nothing${off} ${dim}- the first prompt will pay the model load${off}"
+    fi
+  else
+    echo "Tunnel:       ${red}no answer${off} at http://127.0.0.1:$PORT"
+  fi
+}
+
+case "${1:-status}" in
+  setup)   shift; cmd_setup "${1:-}" ;;
+  pull)    load_conf; shift; cmd_pull "${1:-}" ;;
+  start)   load_conf; shift
+           if [ "${1:-}" = "--build" ]; then cmd_stop >/dev/null; fi
+           cmd_start ;;
+  stop)    load_conf; shift; cmd_stop "${1:-}" ;;
+  restart) load_conf; cmd_stop
+           # A cancelled job holds its allocation for a moment. Submitting into
+           # that window can be refused for resources you have just released.
+           for _ in $(seq 20); do [ -z "$(job_line)" ] && break; sleep 1; done
+           exec "$0" start ;;
+  status)  load_conf; cmd_status ;;
+  gpus)    load_conf; cmd_gpus ;;
+  *) echo "usage: greatlakes {setup <uniqname>|pull [model]|start|stop|restart|status|gpus}" >&2
+     exit 2 ;;
+esac

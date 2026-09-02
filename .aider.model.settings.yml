@@ -28,6 +28,23 @@
   extra_params:
     num_ctx: 32768
 
+# qwen3.8 is a 27B with a 256K window, quoted here at the house 32K. Two
+# quantisations of the same weights: q4_K_M is 18GB and q8_0 is 29GB. Measured
+# on one A40, q4 generates about a third faster (17 against 13 tokens a second)
+# and prefills at the same rate, since reading a prompt is arithmetic rather
+# than memory traffic. Take q8 only for a quality difference you have measured.
+- name: ollama_chat/qwen3.8:27b-q4_K_M
+  edit_format: diff
+  use_repo_map: true
+  extra_params:
+    num_ctx: 32768
+
+- name: ollama_chat/qwen3.8:27b-q8_0
+  edit_format: diff
+  use_repo_map: true
+  extra_params:
+    num_ctx: 32768
+
 # Older, code-specialised alternatives. Worth benchmarking against qwen3.5:9b:
 # a smaller code-tuned model against a bigger general one.
 - name: ollama_chat/qwen2.5-coder:7b
