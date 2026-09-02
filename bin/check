@@ -58,7 +58,17 @@ fi
 # --- local or tunnelled, and is that what .env asked for -------------------
 if curl -sf -m 5 "$API/api/tags" >/dev/null 2>&1; then
   pid="$(lsof -nP -iTCP:"$PORT" -sTCP:LISTEN -t 2>/dev/null | head -1)"
-  who="$([ -n "$pid" ] && ps -o comm= -p "$pid" 2>/dev/null | sed 's|.*/||')"
+  # A forward that is also a multiplexing master renames itself to
+  # "ssh: /path/to/cm-user@host:22 [mux]", and stripping to the last slash
+  # turns that into "cm-user@host:22 [mux]" - which reads as some unknown local
+  # program squatting on the port, and the check then reports the tunnel as the
+  # exact thing it exists to catch. Anyone with ControlMaster in ~/.ssh/config
+  # sees this, on Setup C as much as Setup D.
+  raw="$([ -n "$pid" ] && ps -o comm= -p "$pid" 2>/dev/null)"
+  case "$raw" in
+    ssh|ssh:*|*/ssh) who=ssh ;;
+    *)               who="$(printf '%s' "$raw" | sed 's|.*/||')" ;;
+  esac
   case "$who" in
     ssh) ok "served over the tunnel, from another machine"
          [ "$PORT" = 11434 ] && warn "but .env says 11434, which is usually the local one" ;;
