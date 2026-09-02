@@ -395,7 +395,7 @@ bin/greatlakes pull
 The pull runs on the login node, not on a GPU, so the download costs you
 nothing. Models land in `~/.ollama`, which every compute node mounts, so this is
 once per model rather than once per job. Watch your home quota: 80GB is the
-default, and two quantisations of one 27B is most of it.
+default and a 27B is 18GB of it, so `ollama rm` the ones you stopped using.
 
 ### Each session
 
@@ -428,9 +428,9 @@ between working now and queueing behind one popular partition.
 
 | partition | GPU | VRAM | holds a 27B |
 |---|---|---|---|
-| `spgpu` | A40 | 48GB | q8 (29GB) or q4 (18GB) |
-| `gpu-rtx6000` | RTX PRO 6000 Blackwell | 96GB | anything, and fastest |
-| `gpu_mig40` | A100 80GB, MIG 3g.40gb slice | 40GB | q4 comfortably, q8 tightly |
+| `spgpu` | A40 | 48GB | yes, with room to spare |
+| `gpu-rtx6000` | RTX PRO 6000 Blackwell | 96GB | yes, and fastest |
+| `gpu_mig40` | A100 80GB, MIG 3g.40gb slice | 40GB | yes |
 | `gpu` | Tesla V100 | 16GB | no; models up to about 12GB |
 
 **The model has to fit the card.** Ollama will run one that does not by keeping
@@ -464,17 +464,16 @@ Measured from a laptop through the tunnel, so the numbers include it.
 | model | GPU | first token | generate | prefill |
 |---|---|---|---|---|
 | qwen3.5:4b | V100 16GB | 0.5s | 93 tok/s | 1,150 tok/s |
-| qwen3.8:27b-q8_0 | A40 48GB | 1.2s | 13 tok/s | 1,220 tok/s |
 | qwen3.8:27b-q4_K_M | A40 48GB | 1.2s | 17 tok/s | 1,190 tok/s |
 
 The tunnel costs about 60ms per round trip, which is not what you feel.
 
 What you feel is that generation is memory bandwidth. Every token reads the
-whole model, so 29GB of weights on a card with 696GB/s cannot beat about 24
-tokens a second however idle that card is, and a 4B model on a much older one
-beats a 27B by seven times. Dropping from q8 to q4 cuts the weights from 29GB
-to 18GB and bought 1.3x, not the 1.6x that ratio suggests, because q4_K_M
-spends some of what it saves unpacking each weight.
+whole model, so 18GB of weights on a card with 696GB/s has a ceiling however
+idle that card is, and a 4B model on a much older card beats a 27B by five
+times. This is also why only q4 is shipped: the same weights at q8_0 are 29GB
+and generated 13 tokens a second on the same A40, a third slower for 11GB more
+VRAM.
 
 Prefill barely differs between them, because reading a prompt is arithmetic
 rather than memory traffic. It is also the part you actually wait on: 15,000
